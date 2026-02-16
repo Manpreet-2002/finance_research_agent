@@ -1,0 +1,40 @@
+# Local secrets and auth
+.env
+.env.*
+!.env.example
+credentials.json
+service_account_creds.json
+token.json
+*.pem
+*.key
+*.p12
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+.uv-cache/
+*.egg-info/
+
+# Node / Next.js
+node_modules/
+.next/
+dist/
+coverage/
+
+# Test and run artifacts
+artifacts/
+htmlcov/
+*.log
+*.tmp
+*.bak
+Valuation_Template_TTM_TSM_RD_Lease_BankStyle_ExcelGraph_Logbook.xlsx.bak
+*_smoke_*_Valuation_Template_TTM_TSM_RD_Lease_BankStyle_ExcelGraph_Logbook.xlsx
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
