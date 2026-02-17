@@ -1,0 +1,7 @@
+interface:
+  display_name: "Cap Table Events"
+  short_description: "Reconcile corporate actions and dilution impacts"
+  default_prompt: "Use $corporate-actions-and-cap-table to update share and debt assumptions from corporate action evidence."
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,7 @@
+interface:
+  display_name: "SEC XBRL Extract"
+  short_description: "Normalize filing-backed fundamentals with citations"
+  default_prompt: "Use $sec-filings-and-xbrl-extraction to load SEC-grounded fundamentals into the workbook with provenance."
+
+policy:
+  allow_implicit_invocation: true

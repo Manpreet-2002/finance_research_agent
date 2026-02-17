@@ -1,0 +1,7 @@
+interface:
+  display_name: "IB Memo Composer"
+  short_description: "Draft high-quality, cited investment memo"
+  default_prompt: "Use $memo-composer-ib-style to draft a sheet-grounded memo with weighted scenario framing and citations."
+
+policy:
+  allow_implicit_invocation: true

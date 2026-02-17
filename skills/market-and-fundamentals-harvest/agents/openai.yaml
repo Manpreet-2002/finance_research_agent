@@ -1,0 +1,7 @@
+interface:
+  display_name: "Market Harvest"
+  short_description: "Ingest and reconcile market and capital data"
+  default_prompt: "Use $market-and-fundamentals-harvest to populate market and capital structure inputs with reconciliation logs."
+
+policy:
+  allow_implicit_invocation: true

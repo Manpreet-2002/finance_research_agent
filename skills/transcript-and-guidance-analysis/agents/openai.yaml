@@ -1,0 +1,7 @@
+interface:
+  display_name: "Guidance Signals"
+  short_description: "Convert transcript guidance into model signals"
+  default_prompt: "Use $transcript-and-guidance-analysis to extract management guidance and map it to scenario assumptions."
+
+policy:
+  allow_implicit_invocation: true

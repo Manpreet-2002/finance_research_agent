@@ -1,0 +1,7 @@
+interface:
+  display_name: "Scenario Assumptions"
+  short_description: "Set pess/base/opt assumptions and weights"
+  default_prompt: "Use $assumption-engine-pess-base-opt to write sector-aware scenario assumptions and probabilities into the sheet."
+
+policy:
+  allow_implicit_invocation: true

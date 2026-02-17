@@ -1,0 +1,7 @@
+interface:
+  display_name: "Publish Closeout"
+  short_description: "Finalize run status and close logbook"
+  default_prompt: "Use $publish-and-logbook-closeout to run final gate checks and close the valuation run."
+
+policy:
+  allow_implicit_invocation: false

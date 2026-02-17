@@ -1,0 +1,7 @@
+interface:
+  display_name: "Data Quality Gate"
+  short_description: "Validate and normalize core pre-model inputs"
+  default_prompt: "Use $data-quality-gate-and-normalization to run blocking data checks before assumptions and log remediation actions."
+
+policy:
+  allow_implicit_invocation: true

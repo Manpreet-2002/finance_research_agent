@@ -1,0 +1,7 @@
+interface:
+  display_name: "Finance Quality Bar"
+  short_description: "Enforce high-quality finance research outputs"
+  default_prompt: "Use $finance-quality-bar-and-evidence to enforce source-grounded, Google-Sheets-first valuation quality gates."
+
+policy:
+  allow_implicit_invocation: true

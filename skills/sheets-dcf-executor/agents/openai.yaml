@@ -1,0 +1,7 @@
+interface:
+  display_name: "Sheets DCF Execute"
+  short_description: "Run DCF in-sheet and read named outputs"
+  default_prompt: "Use $sheets-dcf-executor to run the model in Google Sheets and return named-range outputs."
+
+policy:
+  allow_implicit_invocation: true

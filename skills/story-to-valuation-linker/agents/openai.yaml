@@ -1,0 +1,7 @@
+interface:
+  display_name: "Story Linker"
+  short_description: "Map narrative claims to valuation drivers"
+  default_prompt: "Use $story-to-valuation-linker to bind thesis claims to assumptions, outputs, and disconfirming evidence."
+
+policy:
+  allow_implicit_invocation: true

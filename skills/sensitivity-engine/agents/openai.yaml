@@ -1,0 +1,7 @@
+interface:
+  display_name: "Sensitivity Engine"
+  short_description: "Stress key assumptions and flag fragility"
+  default_prompt: "Use $sensitivity-engine to populate and interpret the workbook sensitivity tables."
+
+policy:
+  allow_implicit_invocation: true

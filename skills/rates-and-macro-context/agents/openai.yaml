@@ -1,0 +1,7 @@
+interface:
+  display_name: "Rates Context"
+  short_description: "Build discount-rate inputs from macro evidence"
+  default_prompt: "Use $rates-and-macro-context to set risk-free and macro context inputs with dated evidence."
+
+policy:
+  allow_implicit_invocation: true

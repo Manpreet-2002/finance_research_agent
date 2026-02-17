@@ -1,0 +1,7 @@
+interface:
+  display_name: "Citation Auditor"
+  short_description: "Verify claim grounding and source consistency"
+  default_prompt: "Use $citation-and-consistency-auditor to validate citations, contradictions, and publish readiness."
+
+policy:
+  allow_implicit_invocation: true

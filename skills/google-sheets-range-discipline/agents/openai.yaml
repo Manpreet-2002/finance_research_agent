@@ -1,0 +1,7 @@
+interface:
+  display_name: "Sheets Range Discipline"
+  short_description: "Generate contract-valid named-range payloads for Google Sheets tools"
+  default_prompt: "Use $google-sheets-range-discipline before any sheets tool call to generate only contract-valid named ranges and named-table payloads."
+
+policy:
+  allow_implicit_invocation: true

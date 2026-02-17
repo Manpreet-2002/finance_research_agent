@@ -1,0 +1,7 @@
+interface:
+  display_name: "Ticker Intake"
+  short_description: "Capture mandate and initialize valuation run"
+  default_prompt: "Use $ticker-intake-and-mandate to capture run constraints and initialize the sheet log context."
+
+policy:
+  allow_implicit_invocation: true

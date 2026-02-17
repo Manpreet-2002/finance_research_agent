@@ -1,0 +1,7 @@
+interface:
+  display_name: "Peer Analysis"
+  short_description: "Build sector-aware peers and competitive context"
+  default_prompt: "Use $peer-set-and-competitive-analysis to construct and justify a peer set for comps and narrative validation."
+
+policy:
+  allow_implicit_invocation: true
