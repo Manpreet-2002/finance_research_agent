@@ -16,6 +16,20 @@ Build a high-quality, investment-banking-style, multi-turn finance research agen
 - Assumptions, story, valuation rationale, and citations must be logged in-sheet.
 - Agent should ask for missing high-impact data when needed.
 - Numeric claims in memo must map to sheet output ranges.
+- Post-run formatting pass is deterministic and orchestration-owned (not LLM-owned): auto-resize rows/columns only for `Comps`, `Sources`, `Story`, and `Agent Log`; keep model tabs (`Inputs`, `DCF`, `Sensitivity`, `Checks`, `Output`, `Dilution (TSM)`, `R&D Capitalization`, `Lease Capitalization`) fixed to avoid layout drift.
+
+## Post-run sheet auto-resize policy (implemented)
+1. Execution point:
+- Run once in `finalize` after final sheet writes (`log_status`, `log_end_ts`) and before run completion.
+
+2. Scope:
+- Resize only these presentation/data-heavy tabs: `Comps`, `Sources`, `Story`, `Agent Log`.
+- Do not resize core model tabs to preserve IB-style layout stability and formula readability.
+
+3. Implementation contract:
+- Per run sheet, orchestration calls Google Sheets `spreadsheets.batchUpdate` with `autoResizeDimensions` requests for both `COLUMNS` and `ROWS` across each targeted tab.
+- This is a deterministic, non-LLM step.
+- Failures are logged and appended to run notes; they do not alter valuation math or overwrite model assumptions.
 
 ## Approved financial-modeling execution order (skill contract)
 The financial-modeling skill must execute in this order for each run:
@@ -63,7 +77,7 @@ Critical named ranges (must be first-class interfaces):
 - Sensitivity contract: `sens_base_value_ps`, `sens_wacc_vector`, `sens_terminal_g_vector`, `sens_grid_values`, `sens_grid_full`.
 - Comps contract (dynamic, industry-driven): `comps_target_rev_ttm`, `comps_target_ebit_ttm`, `comps_header`, `comps_firstrow`, `comps_table`, `comps_peer_tickers`, `comps_peer_names`, `comps_multiples_header`, `comps_multiples_values`, `comps_table_full`, `comps_method_note`, `comps_peer_count`, `comps_multiple_count`.
 - Comps legacy compatibility aliases (until migration complete): `comps_ev_ebit`, `comps_ev_sales`, `comps_pe`, `comps_notes`.
-- Story contract: `story_thesis`, `story_growth`, `story_profitability`, `story_reinvestment`, `story_risk`, `story_sanity_checks`, `story_grid_header`, `story_grid_rows`, `story_grid_citations`, `story_memo_hooks`.
+- Story contract: `story_thesis`, `story_growth`, `story_profitability`, `story_reinvestment`, `story_risk`, `story_sanity_checks`, `story_grid_header`, `story_grid_rows`, `story_core_narrative_rows`, `story_linked_operating_driver_rows`, `story_kpi_to_track_rows`, `story_grid_citations`, `story_memo_hooks`.
 - Output contract: `out_value_ps_pess`, `out_value_ps_base`, `out_value_ps_opt`, `out_value_ps_weighted`, `out_equity_value_weighted`, `out_enterprise_value_weighted`, `out_wacc`, `out_terminal_g`.
 - Logbook anchors: `log_actions_firstrow`, `log_assumptions_firstrow`, `log_story_firstrow`.
 
@@ -220,7 +234,10 @@ Critical named ranges (must be first-class interfaces):
 - `story_grid_citations` => `'Story'!$G$24:$G$26`
 - `story_grid_header` => `'Story'!$B$23:$G$23`
 - `story_grid_rows` => `'Story'!$B$24:$G$26`
+- `story_core_narrative_rows` => `'Story'!$C$24:$C$26`
 - `story_growth` => `'Story'!$B$8`
+- `story_kpi_to_track_rows` => `'Story'!$E$24:$E$26`
+- `story_linked_operating_driver_rows` => `'Story'!$D$24:$D$26`
 - `story_memo_hooks` => `'Story'!$C$28:$G$30`
 - `story_profitability` => `'Story'!$B$11`
 - `story_reinvestment` => `'Story'!$B$14`
@@ -273,6 +290,13 @@ Story down-column anchors (approved):
 4. `story_reinvestment` => `'Story'!$B$14`
 5. `story_risk` => `'Story'!$B$17`
 6. `story_sanity_checks` => `'Story'!$B$20`
+
+Story scenario-linkage anchors (mandatory for memo quality):
+1. `story_core_narrative_rows` => `'Story'!$C$24:$C$26`
+2. `story_linked_operating_driver_rows` => `'Story'!$D$24:$D$26`
+3. `story_kpi_to_track_rows` => `'Story'!$E$24:$E$26`
+4. `story_grid_rows` => `'Story'!$B$24:$G$26` (must include non-empty linkage fields for Pessimistic/Neutral/Optimistic rows)
+5. `story_memo_hooks` => `'Story'!$C$28:$G$30` (claim-to-range hooks required before final memo completion)
 
 Sources schema contract (approved, fixed order in `B:L`):
 1. `field_block`
@@ -1209,6 +1233,43 @@ Scope note:
   - down-rank low-authority aggregators for core valuation assumptions.
 - Add source-tier label in `sources_table` and require tier thresholds for critical assumptions.
 
+## TODO: Post-smoke quality remediation from run `smoke_20260218T111741Z` (deferred)
+Scope note:
+- Story-grid linkage completeness (`Core narrative`, `Linked operating driver`, `KPI to track`) is handled in the current package and should not be deferred.
+- Items below are the remaining critique backlog to implement later.
+
+1. Provenance-safe intermediate math
+- Remove hardcoded peer/fundamental constants in `python_execute_math` payloads.
+- Require tool-fed structured inputs for comps and sensitivity math, with source tags per input block.
+- Fail validation if math payload lacks required input provenance metadata.
+
+2. Contradiction-check payload quality
+- Normalize contradiction checker payload to compare metric values across sources/periods (not schema keys such as `period` vs `source`).
+- Add typed contradiction schema tests to prevent semantic mismatch regressions.
+
+3. Evidence quality in validation phase
+- Tighten `fetch_news_evidence` handling so repeated empty result sets trigger explicit degraded-mode logging and fallback logic.
+- Require minimum high-quality evidence rows for memo-critical claims before publish/finalize.
+
+4. Sensitivity contract hardening
+- Ensure `sens_base_value_ps`, `sens_wacc_vector`, and `sens_terminal_g_vector` are explicitly populated/validated alongside `sens_grid_values`.
+- Block finalize if sensitivity vectors are null/blank even when grid values are present.
+
+5. Status governance cleanup
+- Prevent memo phase from writing terminal `log_status=COMPLETED`.
+- Enforce terminal status writes only in finalize path.
+
+6. Sources table quality normalization
+- Replace placeholder literals such as `None` with normalized empty/explicit values.
+- Standardize unit semantics and transform fields for SEC-scale values to avoid audit ambiguity.
+
+7. Reconciliation transparency
+- When canonical prefill values are later overwritten (for example SEC override), append a deterministic reconciliation row to `log_assumptions_table` with source precedence and variance.
+
+8. Citation completion behavior
+- Reduce finalize auto-backfill dependence by requiring LLM-native citation completion earlier in workflow.
+- Keep finalize auto-backfill as last-resort safety net only, with explicit degraded-quality flag in logs.
+
 ### Approved Python math runtime policy (2026-02-17)
 Decision:
 1. `python_execute_math` will run with security guardrails only (no behavior-level bans on `import` or `print`).
@@ -1233,6 +1294,40 @@ Implementation requirements:
   - print captured in `stdout`,
   - raised exceptions captured in `stderr`,
   - timeout/resource guards still enforce termination.
+
+### Approved implementation package (2026-02-18)
+Scope accepted:
+1. Raise comps-note quality to IB standard:
+- each row in `comps_table_full` `Notes` must include:
+  - business model summary,
+  - execution-quality commentary,
+  - valuation multiple rationale (premium/discount reason vs target).
+- enforce minimum detail threshold (multi-sentence, high-information notes).
+2. Make table writes resilient and schema-safe:
+- keep `sources_table` fixed 11-column schema (`B:L`) with deterministic type normalization.
+- enforce fixed-width log table contracts:
+  - `log_actions_table` = 9 columns,
+  - `log_assumptions_table` = 10 columns,
+  - `log_story_table` = 9 columns.
+- prevent run-breaking `row_width` failures by deterministic row normalization before append/write.
+3. Upgrade `python_execute_math` runtime:
+- allow `numpy` usage (`import numpy as np`) for intermediate analytics.
+- keep security/resource guardrails (timeout/memory/process/file/output limits, isolated subprocess).
+- keep deterministic output contract (`compute(inputs)` returns JSON-compatible structured output).
+4. Tool-call schema hardening:
+- accept mixed primitive row cell types from model tool calls, then normalize in tool layer.
+- reject malformed table payloads only after normalization and schema checks.
+5. Finalize validation strengthening:
+- treat descriptive comps headers (for example `Name`) as non-multiple columns when checking numeric coverage.
+- enforce richer `comps_method_note` and row-note depth checks.
+
+Execution alignment note:
+1. No named-range renames are required for this package.
+2. If any future template range changes are introduced, update in strict order:
+- Google Sheets template,
+- `phase_v1.md`,
+- skills,
+- tools/orchestrator validators/tests.
 
 ## Deliverables by end of V1
 - Google Sheets run artifact with full valuation, scenario analysis, sensitivity, competitive context, and logs.

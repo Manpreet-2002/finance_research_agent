@@ -24,6 +24,9 @@ GOOGLE_TEMPLATE_ONLY_RANGES = {
     "log_assumptions_table",
     "log_story_table",
     "checks_statuses",
+    "story_core_narrative_rows",
+    "story_linked_operating_driver_rows",
+    "story_kpi_to_track_rows",
 }
 
 

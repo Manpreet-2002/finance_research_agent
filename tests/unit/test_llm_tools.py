@@ -143,6 +143,29 @@ def test_llm_tool_registry_validates_required_fields() -> None:
         raise AssertionError("Expected ValueError for missing required fields")
 
 
+def test_named_table_tool_schemas_define_nested_row_items_for_gemini() -> None:
+    sheets = _FakeSheetsEngine()
+    registry = build_phase_v1_tool_registry(
+        data_service=_FakeDataService(),
+        research_service=_FakeResearchService(),
+        sheets_engine=sheets,
+    )
+
+    append_schema = registry.spec("sheets_append_named_table_rows").input_schema
+    write_schema = registry.spec("sheets_write_named_table").input_schema
+
+    append_rows = append_schema["properties"]["rows"]
+    write_rows = write_schema["properties"]["rows"]
+
+    assert append_rows["type"] == "array"
+    assert append_rows["items"]["type"] == "array"
+    assert append_rows["items"]["items"]["type"] == "string"
+
+    assert write_rows["type"] == "array"
+    assert write_rows["items"]["type"] == "array"
+    assert write_rows["items"]["items"]["type"] == "string"
+
+
 def test_llm_tool_registry_supports_named_sheet_tools() -> None:
     sheets = _FakeSheetsEngine()
     registry = build_phase_v1_tool_registry(
@@ -170,7 +193,7 @@ def test_llm_tool_registry_supports_named_sheet_tools() -> None:
         {
             "spreadsheet_id": "abc123",
             "table_name": "log_actions_table",
-            "rows": [["step", "ok"]],
+            "rows": [["phase", "action", "step completed"]],
         },
     )
     table_result = registry.call(
@@ -204,6 +227,39 @@ def test_llm_tool_registry_supports_named_sheet_tools() -> None:
     assert table_result["ok"] is True
     assert sheets.named_table_appends[0][1] == "log_actions_table"
     assert sheets.named_table_writes[0][1] == "sources_table"
+
+
+def test_llm_tool_registry_normalizes_sheet_units_before_write() -> None:
+    sheets = _FakeSheetsEngine()
+    registry = build_phase_v1_tool_registry(
+        data_service=_FakeDataService(),
+        research_service=_FakeResearchService(),
+        sheets_engine=sheets,
+    )
+
+    result = registry.call(
+        "sheets_write_named_ranges",
+        {
+            "spreadsheet_id": "abc123",
+            "values": {
+                "inp_rev_ttm": 130_497_000_000,
+                "inp_ebit_ttm": "81453000000",
+                "inp_basic_shares": 24_477_000_000,
+                "inp_rf": 4.25,
+                "inp_w_base": "60",
+                "inp_ticker": "NVDA",
+            },
+        },
+    )
+
+    assert result["ok"] is True
+    written = sheets.named_range_writes[-1][1]
+    assert written["inp_rev_ttm"] == 130_497.0
+    assert written["inp_ebit_ttm"] == 81_453.0
+    assert written["inp_basic_shares"] == 24_477.0
+    assert written["inp_rf"] == 0.0425
+    assert written["inp_w_base"] == 0.6
+    assert written["inp_ticker"] == "NVDA"
 
 
 def test_llm_tool_registry_rejects_malformed_sources_table_schema() -> None:
@@ -267,9 +323,42 @@ def test_llm_tool_registry_writes_comps_table_full_and_updates_control_ranges() 
             "table_name": "comps_table_full",
             "rows": [
                 ["Ticker", "EV/Sales", "EV/EBIT", "Notes"],
-                ["AAPL", "6.1", "22.4", "Target row"],
-                ["MSFT", "11.2", "27.0", "Cloud peer"],
-                ["GOOGL", "7.6", "20.8", "Ads/Cloud peer"],
+                [
+                    "AAPL",
+                    "6.1",
+                    "22.4",
+                    (
+                        "Business model: diversified consumer hardware and services platform "
+                        "with recurring ecosystem monetization. Execution: sustained gross-margin "
+                        "discipline, buyback cadence, and premium product refresh consistency. "
+                        "Valuation multiple rationale: premium multiple supported by mix quality "
+                        "and capital-return durability versus large-cap peers."
+                    ),
+                ],
+                [
+                    "MSFT",
+                    "11.2",
+                    "27.0",
+                    (
+                        "Business model: enterprise software and cloud platform with high switching "
+                        "costs and mission-critical workloads. Execution: durable cloud growth, "
+                        "margin resilience, and disciplined product bundling across segments. "
+                        "Valuation multiple rationale: premium multiple justified by superior "
+                        "recurring revenue quality and operating leverage."
+                    ),
+                ],
+                [
+                    "GOOGL",
+                    "7.6",
+                    "20.8",
+                    (
+                        "Business model: advertising ecosystem plus scaled cloud platform with "
+                        "network effects across search, video, and distribution. Execution: "
+                        "improving cost controls while reinvesting in AI and cloud capacity. "
+                        "Valuation multiple rationale: relative discount to software leaders "
+                        "reflects ad cyclicality but supported by cash generation."
+                    ),
+                ],
             ],
         },
     )
@@ -279,6 +368,44 @@ def test_llm_tool_registry_writes_comps_table_full_and_updates_control_ranges() 
     assert sheets.named_table_writes[-1][1] == "comps_table_full"
     assert sheets.named_range_writes[-1][1]["comps_peer_count"] == 3
     assert sheets.named_range_writes[-1][1]["comps_multiple_count"] == 2
+
+
+def test_llm_tool_registry_normalizes_overwide_log_rows() -> None:
+    sheets = _FakeSheetsEngine()
+    registry = build_phase_v1_tool_registry(
+        data_service=_FakeDataService(),
+        research_service=_FakeResearchService(),
+        sheets_engine=sheets,
+    )
+
+    result = registry.call(
+        "sheets_append_named_table_rows",
+        {
+            "spreadsheet_id": "abc123",
+            "table_name": "log_actions_table",
+            "rows": [
+                [
+                    "memo",
+                    "action",
+                    "Memo composed and story narrative updated.",
+                    "N/A",
+                    "2026-02-17T00:10:00Z",
+                    "Finalized investment memo for WMT.",
+                    "out_value_ps_weighted",
+                    "89.11",
+                    "USD",
+                    "extra_col_1",
+                    "extra_col_2",
+                ]
+            ],
+        },
+    )
+
+    assert result["ok"] is True
+    normalized_row = sheets.named_table_appends[-1][2][0]
+    assert len(normalized_row) == 9
+    assert "extra_col_1" in normalized_row[-1]
+    assert "extra_col_2" in normalized_row[-1]
 
 
 def test_llm_tool_registry_canonical_sheet_inputs_include_tsm_prefill() -> None:
@@ -342,6 +469,59 @@ def test_llm_tool_registry_executes_python_math_tool() -> None:
     assert result["result"]["stderr"] == ""
     assert result["result"]["exit_code"] == 0
     assert "code_hash" in result["result"]
+
+
+def test_llm_tool_registry_executes_python_math_with_numpy() -> None:
+    registry = build_phase_v1_tool_registry(
+        data_service=_FakeDataService(),
+        research_service=_FakeResearchService(),
+        sheets_engine=None,
+    )
+
+    result = registry.call(
+        "python_execute_math",
+        {
+            "code": (
+                "import numpy as np\n"
+                "def compute(inputs):\n"
+                "    values = np.array(inputs.get('values', []), dtype=float)\n"
+                "    print('numpy_mean', float(values.mean()))\n"
+                "    return {'mean': float(values.mean()), 'std': float(values.std())}\n"
+            ),
+            "inputs": {"values": [10, 20, 30, 40]},
+        },
+    )
+
+    assert "result" in result
+    assert result["result"]["output"]["mean"] == 25.0
+    assert result["result"]["output"]["std"] > 0.0
+    assert "numpy_mean 25.0" in result["result"]["stdout"]
+    assert result["result"]["exit_code"] == 0
+
+
+def test_llm_tool_registry_python_math_allows_isinstance() -> None:
+    registry = build_phase_v1_tool_registry(
+        data_service=_FakeDataService(),
+        research_service=_FakeResearchService(),
+        sheets_engine=None,
+    )
+
+    result = registry.call(
+        "python_execute_math",
+        {
+            "code": (
+                "def compute(inputs):\n"
+                "    value = inputs.get('value')\n"
+                "    print('is_str', isinstance(value, str))\n"
+                "    return {'is_str': isinstance(value, str)}\n"
+            ),
+            "inputs": {"value": "GOOG"},
+        },
+    )
+
+    assert result["result"]["output"]["is_str"] is True
+    assert "is_str True" in result["result"]["stdout"]
+    assert result["result"]["exit_code"] == 0
 
 
 class _FailingResearchService:

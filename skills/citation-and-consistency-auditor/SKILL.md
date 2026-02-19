@@ -34,6 +34,10 @@ description: Audit numeric grounding, citation completeness, and cross-source co
 6. Verify `sources_table` rows follow fixed 11-column schema:
 - `field_block`, `source_type`, `dataset_doc`, `url`, `as_of_date`, `notes`, `metric`, `value`, `unit`, `transform`, `citation_id`.
 - reject mixed column orders across rows.
+7. Ensure `sources_table` has at least 3 populated rows and at least 2 distinct `source_type` values.
+8. Ensure `story_grid_citations` has at least 3 populated entries and each entry resolves to:
+- a valid URL, or
+- a `citation_id` present in `sources_table`.
 
 ## Output contract
 

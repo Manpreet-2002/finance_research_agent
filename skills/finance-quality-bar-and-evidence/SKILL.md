@@ -21,7 +21,7 @@ Use this skill when a run needs strict quality control, source selection discipl
 - `references/source-priority-and-contradiction-policy.md`
   - Load when sources disagree or confidence is low.
 - `references/high-impact-thresholds-and-question-policy.md`
-  - Load when deciding whether to ask user follow-ups.
+  - Load when deciding conservative defaults and confidence downgrades for high-impact uncertainty.
 - `references/sector-assumption-playbook.md`
   - Load when setting sector-aware assumptions.
 - `references/sample-mini-memo.md`

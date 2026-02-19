@@ -388,6 +388,95 @@ class GoogleSheetsEngine(SheetsEngine):
             .execute()
         )
 
+    def auto_resize_tabs(
+        self,
+        spreadsheet_id: str,
+        tab_names: list[str],
+    ) -> dict[str, int]:
+        normalized_tabs: list[str] = []
+        seen: set[str] = set()
+        for raw_name in tab_names:
+            name = str(raw_name or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            normalized_tabs.append(name)
+        if not normalized_tabs:
+            return {"tabs_requested": 0, "tabs_resized": 0, "requests_sent": 0}
+
+        response = (
+            self._sheets_service()
+            .spreadsheets()
+            .get(
+                spreadsheetId=spreadsheet_id,
+                fields="sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))",
+            )
+            .execute()
+        )
+        requests: list[dict[str, Any]] = []
+        resized_tabs = 0
+        for sheet in response.get("sheets", []):
+            props = sheet.get("properties", {})
+            title = str(props.get("title") or "").strip()
+            if title not in seen:
+                continue
+            sheet_id = props.get("sheetId")
+            if not isinstance(sheet_id, int):
+                continue
+            grid_props = props.get("gridProperties", {})
+            row_count = grid_props.get("rowCount")
+            col_count = grid_props.get("columnCount")
+            if isinstance(col_count, int) and col_count > 0:
+                requests.append(
+                    {
+                        "autoResizeDimensions": {
+                            "dimensions": {
+                                "sheetId": sheet_id,
+                                "dimension": "COLUMNS",
+                                "startIndex": 0,
+                                "endIndex": col_count,
+                            }
+                        }
+                    }
+                )
+            if isinstance(row_count, int) and row_count > 0:
+                requests.append(
+                    {
+                        "autoResizeDimensions": {
+                            "dimensions": {
+                                "sheetId": sheet_id,
+                                "dimension": "ROWS",
+                                "startIndex": 0,
+                                "endIndex": row_count,
+                            }
+                        }
+                    }
+                )
+            resized_tabs += 1
+
+        if requests:
+            (
+                self._sheets_service()
+                .spreadsheets()
+                .batchUpdate(
+                    spreadsheetId=spreadsheet_id,
+                    body={"requests": requests},
+                )
+                .execute()
+            )
+        self._logger.info(
+            "auto_resize_tabs spreadsheet_id=%s tabs_requested=%s tabs_resized=%s requests_sent=%s",
+            spreadsheet_id,
+            len(normalized_tabs),
+            resized_tabs,
+            len(requests),
+        )
+        return {
+            "tabs_requested": len(normalized_tabs),
+            "tabs_resized": resized_tabs,
+            "requests_sent": len(requests),
+        }
+
     def inspect_workbook(self, spreadsheet_id: str) -> WorkbookInspection:
         schema = self._load_spreadsheet_schema(spreadsheet_id)
         return WorkbookInspection(

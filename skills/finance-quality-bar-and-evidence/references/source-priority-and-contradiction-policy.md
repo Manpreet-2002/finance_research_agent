@@ -47,7 +47,7 @@ Flag a contradiction if any condition is true:
 
 1. Normalize units and period first.
 2. Prefer higher-priority source.
-3. If unresolved, ask user only if valuation impact is high (see high-impact thresholds doc).
+3. If unresolved, apply conservative defaults and downgrade confidence using the high-impact thresholds policy.
 4. Log final decision in `Checks` and `Agent Log` with:
 - metric
 - compared sources

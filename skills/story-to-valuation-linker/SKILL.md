@@ -30,6 +30,9 @@ Story anchor map (must follow):
 4. `story_reinvestment` => `Story!B14`
 5. `story_risk` => `Story!B17`
 6. `story_sanity_checks` => `Story!B20`
+7. `story_core_narrative_rows` => `Story!C24:C26` (pess/base/opt rows)
+8. `story_linked_operating_driver_rows` => `Story!D24:D26`
+9. `story_kpi_to_track_rows` => `Story!E24:E26`
 
 ## Workflow
 
@@ -37,8 +40,12 @@ Story anchor map (must follow):
 2. Map each claim to specific `inp_*` or `out_*` ranges.
 3. Add "what must be true" conditions and failure signals.
 4. Add disconfirming evidence per scenario.
-5. Verify no claim remains unlinked to sheet data.
-6. Populate `story_grid_citations` with explicit URL or `citation_id` tokens for each scenario row.
+5. Populate scenario-grid operating linkage fields for each scenario row:
+- `story_core_narrative_rows`
+- `story_linked_operating_driver_rows`
+- `story_kpi_to_track_rows`
+6. Verify no claim remains unlinked to sheet data.
+7. Populate `story_grid_citations` with explicit URL or `citation_id` tokens for each scenario row.
 
 ## Output contract
 
@@ -56,6 +63,7 @@ Return story-link map with:
 2. Claim mapping survives contradiction audit.
 3. Risk statements are concrete and monitorable.
 4. No story text is written into legacy right-side blocks (`Story!C:G`) for thesis/growth/profitability/reinvestment/risk/sanity fields.
+5. Do not leave `Core narrative`, `Linked operating driver`, or `KPI to track` blank for any scenario row.
 
 ## Required references
 

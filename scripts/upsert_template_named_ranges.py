@@ -221,6 +221,13 @@ def _phase_v1_range_specs() -> tuple[NamedRangeSpec, ...]:
         NamedRangeSpec("log_assumptions_table", "Agent Log", 221, 246, 2, 11),
         NamedRangeSpec("log_story_table", "Agent Log", 251, 286, 2, 10),
         NamedRangeSpec("checks_statuses", "Checks", 5, 17, 3, 3),
+        NamedRangeSpec("story_grid_header", "Story", 23, 23, 2, 7),
+        NamedRangeSpec("story_grid_rows", "Story", 24, 26, 2, 7),
+        NamedRangeSpec("story_grid_citations", "Story", 24, 26, 7, 7),
+        NamedRangeSpec("story_memo_hooks", "Story", 28, 30, 3, 7),
+        NamedRangeSpec("story_core_narrative_rows", "Story", 24, 26, 3, 3),
+        NamedRangeSpec("story_linked_operating_driver_rows", "Story", 24, 26, 4, 4),
+        NamedRangeSpec("story_kpi_to_track_rows", "Story", 24, 26, 5, 5),
     )
 
 

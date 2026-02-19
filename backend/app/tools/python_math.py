@@ -19,6 +19,11 @@ from time import perf_counter
 import traceback
 from typing import Any
 
+try:  # pragma: no cover - optional import resolved by project dependency
+    import numpy as _numpy
+except Exception:  # pragma: no cover - environment fallback
+    _numpy = None  # type: ignore[assignment]
+
 import statistics
 
 _MAX_CODE_CHARS = 12_000
@@ -30,7 +35,13 @@ _MAX_FILE_BYTES = 5 * 1024 * 1024
 _MAX_OPEN_FILES = 128
 _MAX_PROCESSES = 32
 _MAX_STD_STREAM_CHARS = _MAX_IO_BYTES
-_ALLOWED_MODULES: dict[str, Any] = {"math": math, "statistics": statistics}
+_ALLOWED_MODULES: dict[str, Any] = {
+    "math": math,
+    "statistics": statistics,
+}
+if _numpy is not None:
+    _ALLOWED_MODULES["np"] = _numpy
+    _ALLOWED_MODULES["numpy"] = _numpy
 _ALLOWED_BUILTINS: dict[str, Any] = {
     "abs": abs,
     "all": all,
@@ -45,6 +56,7 @@ _ALLOWED_BUILTINS: dict[str, Any] = {
     "enumerate": enumerate,
     "float": float,
     "int": int,
+    "isinstance": isinstance,
     "len": len,
     "list": list,
     "max": max,

@@ -1,6 +1,6 @@
 ---
 name: ticker-intake-and-mandate
-description: Capture ticker mandate, decision horizon, risk posture, and missing high-impact inputs for the valuation run, then initialize run metadata in Google Sheets.
+description: Capture ticker mandate, decision horizon, risk posture, and high-impact default policy for the valuation run, then initialize run metadata in Google Sheets.
 ---
 
 # Ticker Intake And Mandate
@@ -9,7 +9,7 @@ description: Capture ticker mandate, decision horizon, risk posture, and missing
 
 - A new valuation run starts.
 - User constraints and decision criteria are incomplete.
-- High-impact assumptions must be clarified before model population.
+- High-impact assumptions must be defaulted before model population.
 
 ## Mandatory operating constraints
 
@@ -36,7 +36,7 @@ description: Capture ticker mandate, decision horizon, risk posture, and missing
 1. Validate ticker format and issuer identity.
 2. Capture mandate and explicit success criteria.
 3. Load `../finance-quality-bar-and-evidence/references/high-impact-thresholds-and-question-policy.md`.
-4. Ask follow-up questions only for high-impact missing inputs.
+4. Apply conservative defaults for high-impact missing inputs and record valuation impact.
 5. Record accepted defaults and confidence level in `Agent Log`.
 6. Produce a run brief for downstream skills.
 
@@ -46,12 +46,12 @@ Return a structured run brief containing:
 
 - ticker and company name
 - mandate summary
-- missing high-impact inputs (if any)
-- recommended defaults used
+- high-impact defaults applied (if any)
+- recommended default rationale
 - constraints to enforce downstream
 
 ## Quality gates
 
 1. No ambiguous mandate language remains.
-2. High-impact uncertainties are either resolved or explicitly defaulted.
+2. High-impact uncertainties are explicitly defaulted with impact notes.
 3. Intake assumptions are logged with rationale and confidence.

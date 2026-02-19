@@ -20,6 +20,10 @@ description: Build and justify sector-aware peer sets, produce competitive posit
 6. Do not modify local template files in this repository.
 7. Populate comps as a structured numeric table; never write narrative prose into numeric multiple columns.
 8. Use named ranges/tables only (`comps_*`, `sources_table`, `log_*_table`, `story_grid_citations`).
+9. Every `Notes` cell in `comps_table_full` must be IB-grade and include all three:
+- short business model summary,
+- execution quality commentary,
+- explicit valuation-multiple rationale (why premium/discount vs target).
 
 ## Sheet targets
 
@@ -43,6 +47,10 @@ description: Build and justify sector-aware peer sets, produce competitive posit
   - first data row must be target ticker (`inp_ticker`)
   - remaining rows are peers in justified order
   - each row has same width as header
+  - each `Notes` value must be at least 2-3 sentences and cover:
+    - `Business model:` what the company is and economics model
+    - `Execution:` operating quality, growth/margin consistency, or key execution risks
+    - `Multiple rationale:` why this row should trade at premium/discount vs target
 7. Write comps in this order:
 - `comps_method_note`
 - `comps_table_full` via `sheets_write_named_table` (header + data rows)
@@ -54,6 +62,10 @@ description: Build and justify sector-aware peer sets, produce competitive posit
 - `[field_block, source_type, dataset_doc, url, as_of_date, notes, metric, value, unit, transform, citation_id]`
 - include one source row per non-trivial multiple input block.
 11. Write disconfirming competitive risks in `Story` and citation hooks in `story_grid_citations`.
+12. Use deterministic python tool-call shape for comps math:
+- preferred signature is `def compute(inputs): ... return {...}`
+- `numpy` is allowed for vectorized calculations (`import numpy as np`)
+- write machine-readable outputs that can be mapped directly into table cells.
 
 ## Output contract
 
@@ -73,6 +85,7 @@ Return peer package with:
 4. Header is `Ticker ... Notes` and row 1 is target company with populated metrics.
 5. Relative metrics are mapped to source rows in fixed schema order.
 6. Competitive insights link to assumptions in `Inputs`.
+7. `Notes` cells are finance-grade and explicitly explain business model + execution + multiple rationale.
 
 ## Required references
 

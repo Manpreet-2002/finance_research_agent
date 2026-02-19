@@ -1,10 +1,10 @@
-# High-Impact Thresholds And User Question Policy
+# High-Impact Thresholds And Defaulting Policy
 
-Ask the user a follow-up only when the expected decision impact is material and cannot be resolved with reliable defaults.
+No human-in-the-loop is enabled for this runtime. Do not ask follow-up questions. When uncertainty is high-impact, apply conservative defaults, widen scenario dispersion where appropriate, and downgrade confidence.
 
 ## Quantitative high-impact triggers
 
-Trigger a user question if any condition is true:
+Treat uncertainty as high-impact if any condition is true:
 
 1. Valuation dispersion
 - `max(out_value_ps_*) - min(out_value_ps_*)` exceeds 35% of base case.
@@ -30,23 +30,25 @@ Trigger a user question if any condition is true:
 2. Major regulatory or litigation overhang with binary outcomes.
 3. Balance-sheet risk that can alter survival probability or refinancing assumptions.
 
-## Question format policy
+## Required handling policy
 
-Each question must include:
+For every triggered high-impact uncertainty:
 
-1. Decision that must be made.
-2. Recommended default and rationale.
-3. Two to three explicit choices.
-4. Effect on valuation if user accepts/rejects the recommendation.
+1. Apply a conservative default anchored to source hierarchy and sector medians.
+2. Document rationale and confidence downgrade in `log_assumptions_table`.
+3. Reflect uncertainty in scenarios (weights, growth, margin, or discount-rate spread).
+4. Ensure `Sensitivity` includes stress points covering the uncertainty range.
+5. Record contradiction resolution in `log_actions_table` when source conflict exists.
 
-## Example question template
+## Example default template
 
 - `Decision`: Base-case long-run operating margin target.
-- `Recommendation`: 24% (sector median plus company moat evidence).
-- `Choices`: 22%, 24%, 26%.
+- `Default`: 24% (conservative vs recent run-rate, anchored to sector median).
+- `Rationale`: Protect against cycle compression and execution variance.
 - `Impact`: Each 100 bps shifts weighted value per share by about 6-8% in current sensitivity table.
+- `Confidence`: Medium (conflicting guidance + macro uncertainty).
 
-## Defaulting policy when user does not respond
+## Defaulting policy
 
 1. Apply conservative default.
 2. Mark confidence one level lower.

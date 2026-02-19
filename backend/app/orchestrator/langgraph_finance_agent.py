@@ -56,6 +56,10 @@ class FinanceAgentState(TypedDict, total=False):
     tool_call_artifact_path: str
 
 
+class LlmInvokeFailure(RuntimeError):
+    """Raised when an LLM invoke call fails and run must hard-stop."""
+
+
 _CANONICAL_REQUIRED_PREFILL_RANGES: tuple[str, ...] = (
     "inp_rev_ttm",
     "inp_ebit_ttm",
@@ -106,11 +110,33 @@ _FORMULA_ERROR_TOKENS: tuple[str, ...] = (
 _COMPS_MIN_PEERS = 3
 _COMPS_MIN_MULTIPLES = 3
 _COMPS_MIN_NUMERIC_COVERAGE = 0.75
+_COMPS_METHOD_NOTE_MIN_CHARS = 80
+_COMPS_ROW_NOTE_MIN_CHARS = 120
+_COMPS_ROW_NOTE_REQUIRED_SIGNALS: tuple[str, ...] = (
+    "business",
+    "execution",
+    "multiple",
+    "valuation",
+)
+_COMPS_NON_NUMERIC_HEADERS: frozenset[str] = frozenset({"name"})
 _SOURCES_MIN_ROWS = 3
 _STORY_MIN_TEXT_CHARS = 60
 _STORY_MIN_CITATION_ROWS = 3
+_STORY_REQUIRED_SCENARIOS: tuple[str, ...] = ("pessimistic", "neutral", "optimistic")
+_STORY_MIN_CORE_NARRATIVE_CHARS = 30
+_STORY_MIN_OPERATING_DRIVER_CHARS = 20
+_STORY_MIN_KPI_CHARS = 8
+_STORY_MIN_MEMO_HOOKS = 3
+_STORY_MEMO_HOOK_RANGE_TOKEN_RE = re.compile(r"\b(inp_|out_|sens_|comps_)[A-Za-z0-9_]*")
+_AUTO_SOURCES_MAX_ROWS = 40
 _SENSITIVITY_PLACEHOLDER_TOKENS: tuple[str, ...] = (
     "populate via agent scenario sweep",
+)
+_AUTO_RESIZE_PRESENTATION_TABS: tuple[str, ...] = (
+    "Comps",
+    "Sources",
+    "Story",
+    "Agent Log",
 )
 _SOURCE_SCHEMA_WIDTH = 11
 _CITATION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,}$")
@@ -128,7 +154,8 @@ class LangGraphFinanceAgent:
     skill_loader: SkillLoader
     max_phase_turns: int = 10
     max_phase_wall_clock_seconds: float = 120.0
-    max_llm_invoke_seconds: float = 300.0
+    max_llm_invoke_seconds: float = 600.0
+    max_validation_repair_passes: int = 2
     _tool_map: dict[str, StructuredTool] = field(default_factory=dict, init=False, repr=False)
     _graph: Any = field(default=None, init=False, repr=False)
     _logger: logging.Logger = field(default_factory=lambda: logging.getLogger("finance_research_agent.orchestrator"), init=False, repr=False)
@@ -214,10 +241,18 @@ class LangGraphFinanceAgent:
             "tool_call_artifact_path": "",
         }
 
-        final_state = self._graph.invoke(
-            initial_state,
-            config={"configurable": {"thread_id": request.run_id}},
-        )
+        try:
+            final_state = self._graph.invoke(
+                initial_state,
+                config={"configurable": {"thread_id": request.run_id}},
+            )
+        except LlmInvokeFailure:
+            self._logger.exception(
+                "agent_run_llm_invoke_failure run_id=%s ticker=%s",
+                request.run_id,
+                request.ticker,
+            )
+            raise
         result = self._state_to_result(final_state)
         self._logger.info(
             "agent_run_end run_id=%s status=%s spreadsheet_id=%s",
@@ -444,23 +479,58 @@ class LangGraphFinanceAgent:
             if phase == WorkflowPhase.VALIDATION:
                 spreadsheet_id = str(state.get("spreadsheet_id") or "").strip()
                 run_id = str(state.get("run_id") or "")
-                if not spreadsheet_id:
-                    phase_gate_issues.append(
-                        "Missing spreadsheet_id for validation sensitivity writeback."
-                    )
-                else:
-                    sensitivity_issues = self._enforce_sensitivity_writeback(
+                validation_repair_count = 0
+                while True:
+                    phase_gate_issues = self._collect_validation_gate_issues(
                         spreadsheet_id=spreadsheet_id,
                         run_id=run_id,
                         phase_name=phase.value,
                     )
-                    phase_gate_issues.extend(sensitivity_issues)
-                if phase_gate_issues:
+                    if not phase_gate_issues:
+                        break
+
                     self._logger.warning(
-                        "phase_validation_gate_failed run_id=%s issues=%s",
+                        "phase_validation_gate_failed run_id=%s repair=%s issues=%s",
                         state.get("run_id"),
+                        validation_repair_count,
                         phase_gate_issues,
                     )
+                    if validation_repair_count >= self.max_validation_repair_passes:
+                        break
+
+                    repair_issue_preview = "; ".join(phase_gate_issues[:4])
+                    repair_prompt = (
+                        f"{user_prompt}\n\n"
+                        "Validation gate failed. Repair ALL listed issues before ending this phase.\n"
+                        "Rules:\n"
+                        "- Use only Google Sheets named-range tools.\n"
+                        "- Keep valuation math in-sheet.\n"
+                        "- For comps_table_full: header must start 'Ticker', end 'Notes', "
+                        "and include >=3 valuation multiples.\n"
+                        "- Populate Story required ranges and scenario linkage rows.\n"
+                        f"Current issues: {repair_issue_preview}"
+                    )
+                    repair_response, repair_events = self._run_phase_llm_turns(
+                        system_prompt=system_prompt,
+                        user_prompt=repair_prompt,
+                        tool_names=tool_names,
+                        expected_spreadsheet_id=spreadsheet_id,
+                        run_id=run_id,
+                        phase_name=phase.value,
+                    )
+                    if repair_response:
+                        response_text = "\n".join(
+                            filter(
+                                None,
+                                [
+                                    response_text,
+                                    f"[validation_repair_{validation_repair_count + 1}] {repair_response}",
+                                ],
+                            )
+                        )
+                    if repair_events:
+                        tool_events.extend(repair_events)
+                    validation_repair_count += 1
             self._logger.info(
                 "phase_end run_id=%s phase=%s tool_events=%s",
                 state.get("run_id"),
@@ -502,6 +572,28 @@ class LangGraphFinanceAgent:
 
         return _node
 
+    def _collect_validation_gate_issues(
+        self,
+        *,
+        spreadsheet_id: str,
+        run_id: str,
+        phase_name: str,
+    ) -> list[str]:
+        normalized_id = str(spreadsheet_id or "").strip()
+        if not normalized_id:
+            return ["Missing spreadsheet_id for validation sensitivity writeback."]
+        issues: list[str] = []
+        issues.extend(
+            self._enforce_sensitivity_writeback(
+                spreadsheet_id=normalized_id,
+                run_id=run_id,
+                phase_name=phase_name,
+            )
+        )
+        issues.extend(self._validate_comps_contract(normalized_id))
+        issues.extend(self._validate_story_contract(normalized_id))
+        return issues
+
     def _finalize_node(self, state: FinanceAgentState) -> FinanceAgentState:
         notes = list(state.get("notes") or [])
         spreadsheet_id = state.get("spreadsheet_id")
@@ -516,6 +608,14 @@ class LangGraphFinanceAgent:
         request = state.get("request")
 
         try:
+            auto_citation_issues = self._enforce_sources_story_citation_writeback(
+                spreadsheet_id=spreadsheet_id,
+                run_id=str(state.get("run_id") or ""),
+                artifact_path=str(state.get("tool_call_artifact_path") or ""),
+            )
+            if auto_citation_issues:
+                notes.extend(auto_citation_issues)
+
             outputs = self.sheets_engine.read_outputs(spreadsheet_id)
             validation_issues.extend(self._validate_outputs(outputs))
             validation_issues.extend(self._validate_weights(spreadsheet_id))
@@ -562,6 +662,10 @@ class LangGraphFinanceAgent:
                 state.get("run_id"),
                 spreadsheet_id,
             )
+
+        resize_issues = self._auto_resize_presentation_tabs(spreadsheet_id)
+        if resize_issues:
+            notes.extend(resize_issues)
 
         company_name = ""
         try:
@@ -628,6 +732,34 @@ class LangGraphFinanceAgent:
             "final_outputs": outputs,
             "notes": notes,
         }
+
+    def _auto_resize_presentation_tabs(self, spreadsheet_id: str) -> list[str]:
+        auto_resize = getattr(self.sheets_engine, "auto_resize_tabs", None)
+        if not callable(auto_resize):
+            self._logger.info(
+                "auto_resize_skipped spreadsheet_id=%s reason=unsupported_engine",
+                spreadsheet_id,
+            )
+            return []
+        try:
+            result = auto_resize(
+                spreadsheet_id,
+                list(_AUTO_RESIZE_PRESENTATION_TABS),
+            )
+            self._logger.info(
+                "auto_resize_complete spreadsheet_id=%s tabs=%s result=%s",
+                spreadsheet_id,
+                ",".join(_AUTO_RESIZE_PRESENTATION_TABS),
+                result,
+            )
+            return []
+        except Exception as exc:
+            self._logger.exception(
+                "auto_resize_failed spreadsheet_id=%s tabs=%s",
+                spreadsheet_id,
+                ",".join(_AUTO_RESIZE_PRESENTATION_TABS),
+            )
+            return [f"Post-run sheet auto-resize failed: {exc}"]
 
     def _state_to_result(self, state: FinanceAgentState) -> ValuationRunResult:
         outputs = state.get("final_outputs") or {}
@@ -755,33 +887,23 @@ class LangGraphFinanceAgent:
                     context="phase_no_tools",
                 )
             except TimeoutError as exc:
-                self._logger.warning("phase_llm_timeout context=no_tools error=%s", exc)
-                return (
-                    "Phase stopped due to LLM timeout guardrail; continue with conservative defaults and log degraded status.",
-                    [
-                        {
-                            "tool": "__llm_guardrail__",
-                            "args": {},
-                            "citation_count": 0,
-                            "citation_sources": [],
-                            "guardrail": str(exc),
-                        }
-                    ],
+                self._logger.exception(
+                    "phase_llm_timeout_hard_fail run_id=%s phase=%s context=no_tools",
+                    run_id,
+                    phase_name,
                 )
+                raise LlmInvokeFailure(
+                    f"LLM invoke timeout in phase '{phase_name}' (no_tools): {exc}"
+                ) from exc
             except Exception as exc:
-                self._logger.warning("phase_llm_error context=no_tools error=%s", exc)
-                return (
-                    "Phase stopped due to LLM provider error; continue with conservative defaults and log degraded status.",
-                    [
-                        {
-                            "tool": "__llm_error__",
-                            "args": {},
-                            "citation_count": 0,
-                            "citation_sources": [],
-                            "guardrail": str(exc),
-                        }
-                    ],
+                self._logger.exception(
+                    "phase_llm_error_hard_fail run_id=%s phase=%s context=no_tools",
+                    run_id,
+                    phase_name,
                 )
+                raise LlmInvokeFailure(
+                    f"LLM invoke error in phase '{phase_name}' (no_tools): {exc}"
+                ) from exc
             return _message_content_to_text(response.content), []
 
         messages: list[Any] = [
@@ -797,7 +919,7 @@ class LangGraphFinanceAgent:
 
         final_response = ""
         try:
-            for _ in range(self.max_phase_turns):
+            for turn_idx in range(self.max_phase_turns):
                 if (perf_counter() - phase_started) > self.max_phase_wall_clock_seconds:
                     tool_events.append(
                         {
@@ -825,40 +947,23 @@ class LangGraphFinanceAgent:
                         context="phase_tool_loop",
                     )
                 except TimeoutError as exc:
-                    tool_events.append(
-                        {
-                            "tool": "__llm_guardrail__",
-                            "args": {},
-                            "citation_count": 0,
-                            "citation_sources": [],
-                            "guardrail": str(exc),
-                        }
+                    self._logger.exception(
+                        "phase_llm_timeout_hard_fail run_id=%s phase=%s context=phase_tool_loop",
+                        run_id,
+                        phase_name,
                     )
-                    if not final_response:
-                        final_response = (
-                            "Phase stopped due to LLM timeout guardrail; "
-                            "continue with conservative defaults and log degraded status."
-                        )
-                    break
+                    raise LlmInvokeFailure(
+                        f"LLM invoke timeout in phase '{phase_name}' (tool_loop): {exc}"
+                    ) from exc
                 except Exception as exc:
-                    message = str(exc)
-                    if "thought_signature" in message:
-                        raise
-                    tool_events.append(
-                        {
-                            "tool": "__llm_error__",
-                            "args": {},
-                            "citation_count": 0,
-                            "citation_sources": [],
-                            "guardrail": message,
-                        }
+                    self._logger.exception(
+                        "phase_llm_error_hard_fail run_id=%s phase=%s context=phase_tool_loop",
+                        run_id,
+                        phase_name,
                     )
-                    if not final_response:
-                        final_response = (
-                            "Phase stopped due to LLM provider error; "
-                            "continue with conservative defaults and log degraded status."
-                        )
-                    break
+                    raise LlmInvokeFailure(
+                        f"LLM invoke error in phase '{phase_name}' (tool_loop): {exc}"
+                    ) from exc
                 # Keep the original AIMessage object in history so provider-specific
                 # tool metadata (including Gemini thought signatures) is preserved.
                 messages.append(ai_message)
@@ -866,6 +971,41 @@ class LangGraphFinanceAgent:
                 final_response = _message_content_to_text(ai_message.content)
                 tool_calls = list(getattr(ai_message, "tool_calls", []) or [])
                 if not tool_calls:
+                    validation_contract_issues = self._validation_exit_contract_issues(
+                        phase_name=phase_name,
+                        spreadsheet_id=expected_spreadsheet_id,
+                    )
+                    if validation_contract_issues:
+                        issue_preview = "; ".join(validation_contract_issues[:3])
+                        tool_events.append(
+                            {
+                                "tool": "__phase_guardrail__",
+                                "args": {},
+                                "citation_count": 0,
+                                "citation_sources": [],
+                                "guardrail": (
+                                    "validation_contract_incomplete "
+                                    f"issues={issue_preview}"
+                                ),
+                            }
+                        )
+                        if turn_idx < (self.max_phase_turns - 1):
+                            messages.append(
+                                HumanMessage(
+                                    content=(
+                                        "Validation phase cannot complete until validation contracts are satisfied.\n"
+                                        "Fix now with Google Sheets named-range tools:\n"
+                                        "1. Repair comps_table_full with >=3 valuation multiples and IB-grade notes.\n"
+                                        "2. Ensure first data row ticker equals inp_ticker and control ranges are set.\n"
+                                        "3. Populate all required Story fields and scenario linkage rows.\n"
+                                        f"Current validation issues: {issue_preview}"
+                                    )
+                                )
+                            )
+                            final_response = (
+                                "Validation continuation required: contract incomplete."
+                            )
+                            continue
                     break
 
                 for tool_call in tool_calls:
@@ -940,19 +1080,36 @@ class LangGraphFinanceAgent:
                         )
                     )
             return final_response, tool_events
+        except LlmInvokeFailure:
+            raise
         except Exception as exc:
-            message = str(exc)
-            if "thought_signature" not in message:
-                raise
-            return self._run_phase_planner_executor(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                tool_names=tool_names,
-                failure_message=message,
-                expected_spreadsheet_id=expected_spreadsheet_id,
-                run_id=run_id,
-                phase_name=phase_name,
+            self._logger.exception(
+                "phase_llm_unhandled_hard_fail run_id=%s phase=%s",
+                run_id,
+                phase_name,
             )
+            raise LlmInvokeFailure(
+                f"Unexpected LLM phase failure in '{phase_name}': {exc}"
+            ) from exc
+
+    def _validation_exit_contract_issues(
+        self,
+        *,
+        phase_name: str,
+        spreadsheet_id: str,
+    ) -> list[str]:
+        if phase_name != WorkflowPhase.VALIDATION.value:
+            return []
+        normalized_id = str(spreadsheet_id or "").strip()
+        if not normalized_id:
+            return ["Missing spreadsheet_id for validation contract checks."]
+        try:
+            issues: list[str] = []
+            issues.extend(self._validate_comps_contract(normalized_id))
+            issues.extend(self._validate_story_contract(normalized_id))
+            return issues
+        except Exception as exc:
+            return [f"Validation contract checks failed: {exc}"]
 
     def _invoke_with_timeout(
         self,
@@ -1024,31 +1181,13 @@ class LangGraphFinanceAgent:
                 context="planner_executor_plan",
             )
         except TimeoutError as exc:
-            return (
-                "Planner-executor fallback timed out before planning actions.",
-                [
-                    {
-                        "tool": "__llm_guardrail__",
-                        "args": {},
-                        "citation_count": 0,
-                        "citation_sources": [],
-                        "guardrail": str(exc),
-                    }
-                ],
-            )
+            raise LlmInvokeFailure(
+                f"LLM invoke timeout in phase '{phase_name}' (planner_plan): {exc}"
+            ) from exc
         except Exception as exc:
-            return (
-                "Planner-executor fallback failed while creating plan; continue with conservative defaults.",
-                [
-                    {
-                        "tool": "__llm_error__",
-                        "args": {},
-                        "citation_count": 0,
-                        "citation_sources": [],
-                        "guardrail": str(exc),
-                    }
-                ],
-            )
+            raise LlmInvokeFailure(
+                f"LLM invoke error in phase '{phase_name}' (planner_plan): {exc}"
+            ) from exc
         plan_payload = _extract_json_payload(_message_content_to_text(plan_response.content))
         actions = plan_payload.get("actions")
         if not isinstance(actions, list):
@@ -1156,27 +1295,13 @@ class LangGraphFinanceAgent:
                 context="planner_executor_summary",
             )
         except TimeoutError as exc:
-            tool_events.append(
-                {
-                    "tool": "__llm_guardrail__",
-                    "args": {},
-                    "citation_count": 0,
-                    "citation_sources": [],
-                    "guardrail": str(exc),
-                }
-            )
-            return "Planner-executor summary timed out.", tool_events
+            raise LlmInvokeFailure(
+                f"LLM invoke timeout in phase '{phase_name}' (planner_summary): {exc}"
+            ) from exc
         except Exception as exc:
-            tool_events.append(
-                {
-                    "tool": "__llm_error__",
-                    "args": {},
-                    "citation_count": 0,
-                    "citation_sources": [],
-                    "guardrail": str(exc),
-                }
-            )
-            return "Planner-executor summary failed.", tool_events
+            raise LlmInvokeFailure(
+                f"LLM invoke error in phase '{phase_name}' (planner_summary): {exc}"
+            ) from exc
         return _message_content_to_text(summary_response.content), tool_events
 
     def _resolve_phase_tool_names(
@@ -1253,6 +1378,20 @@ class LangGraphFinanceAgent:
                     f"{', '.join(allowed_tables)}.\n"
                 )
 
+        phase_completion_line = ""
+        if phase == WorkflowPhase.MEMO:
+            phase_completion_line = (
+                "9. Memo phase is incomplete until Story linkage rows are written for all scenarios: "
+                "story_core_narrative_rows, story_linked_operating_driver_rows, "
+                "story_kpi_to_track_rows, story_memo_hooks, story_grid_citations.\n"
+            )
+        if phase == WorkflowPhase.VALIDATION:
+            phase_completion_line = (
+                "9. Validation phase is incomplete until comps contract is satisfied: "
+                "write comps_table_full (header + rows), comps_peer_count, "
+                "comps_multiple_count, and comps_method_note.\n"
+            )
+
         return (
             "You are the V1 US-stocks finance research agent. "
             "Execute the current deterministic phase with strict discipline.\n\n"
@@ -1265,6 +1404,7 @@ class LangGraphFinanceAgent:
             "6. Use source priority and contradiction handling as specified in skills.\n\n"
             f"{allowed_named_ranges_line}"
             f"{allowed_named_tables_line}"
+            f"{phase_completion_line}"
             f"Current phase: {phase.value}\n"
             f"Available tools this phase: {', '.join(tool_names) if tool_names else 'none'}\n\n"
             "Return a concise phase summary in markdown, including decisions, tool actions, and handoff to next phase.\n\n"
@@ -1744,7 +1884,18 @@ class LangGraphFinanceAgent:
         if header_last != "notes":
             issues.append("Comps contract failed: last non-empty header must be 'Notes'.")
 
-        table_multiple_count = max(last_header_idx - 1, 0)
+        numeric_metric_columns: list[int] = []
+        for col_idx in range(1, last_header_idx):
+            header_label = str(
+                header_row[col_idx] if col_idx < len(header_row) else ""
+            ).strip()
+            if not header_label:
+                continue
+            if header_label.casefold() in _COMPS_NON_NUMERIC_HEADERS:
+                continue
+            numeric_metric_columns.append(col_idx)
+
+        table_multiple_count = len(numeric_metric_columns)
         if table_multiple_count < _COMPS_MIN_MULTIPLES:
             issues.append(
                 "Comps contract failed: need >= "
@@ -1776,8 +1927,11 @@ class LangGraphFinanceAgent:
                 f"(expected={table_multiple_count}, found={multiple_count})."
             )
 
-        if len(str(method_note or "").strip()) < 20:
-            issues.append("Comps contract failed: comps_method_note is missing/too thin.")
+        if len(str(method_note or "").strip()) < _COMPS_METHOD_NOTE_MIN_CHARS:
+            issues.append(
+                "Comps contract failed: comps_method_note is missing/too thin "
+                f"(min_chars={_COMPS_METHOD_NOTE_MIN_CHARS})."
+            )
 
         first_row_ticker = str(_cell_at(data_rows, 0, 0) or "").strip().upper()
         if target_ticker:
@@ -1801,8 +1955,9 @@ class LangGraphFinanceAgent:
             if not notes:
                 issues.append(f"Comps contract failed: missing Notes at data row {row_idx + 1}.")
                 break
+            issues.extend(_validate_comps_note_quality(note=notes, row_idx=row_idx + 1))
 
-            for col_idx in range(1, last_header_idx):
+            for col_idx in numeric_metric_columns:
                 raw = _cell_at([row], 0, col_idx)
                 if _to_float_cell(raw) is not None:
                     numeric_cells += 1
@@ -1902,9 +2057,21 @@ class LangGraphFinanceAgent:
             "story_risk",
             "story_sanity_checks",
         )
+        required_grid_columns = (
+            "story_core_narrative_rows",
+            "story_linked_operating_driver_rows",
+            "story_kpi_to_track_rows",
+        )
         blocks = self.sheets_engine.read_named_ranges(
             spreadsheet_id,
-            list(required_blocks) + ["story_grid_citations"],
+            list(required_blocks)
+            + [
+                "story_grid_header",
+                "story_grid_rows",
+                "story_grid_citations",
+                "story_memo_hooks",
+            ]
+            + list(required_grid_columns),
             value_render_option="FORMATTED_VALUE",
         )
         for name in required_blocks:
@@ -1914,6 +2081,67 @@ class LangGraphFinanceAgent:
                     f"Story contract failed: {name} is under-filled "
                     f"(chars={len(text)}, required>={_STORY_MIN_TEXT_CHARS})."
                 )
+
+        grid_rows = blocks.get("story_grid_rows", [])
+        if len(grid_rows) < len(_STORY_REQUIRED_SCENARIOS):
+            issues.append(
+                "Story contract failed: story_grid_rows must include scenario rows "
+                f"(rows={len(grid_rows)}, required={len(_STORY_REQUIRED_SCENARIOS)})."
+            )
+        for row_idx, scenario in enumerate(_STORY_REQUIRED_SCENARIOS):
+            label = str(_cell_at(grid_rows, row_idx, 0) or "").strip().casefold()
+            if not label:
+                issues.append(
+                    "Story contract failed: scenario row label missing "
+                    f"(row={row_idx + 1}, expected~={scenario})."
+                )
+            elif scenario not in label:
+                issues.append(
+                    "Story contract failed: scenario row label mismatch "
+                    f"(row={row_idx + 1}, expected~={scenario}, found={label!r})."
+                )
+
+        grid_column_rules = (
+            ("story_core_narrative_rows", _STORY_MIN_CORE_NARRATIVE_CHARS),
+            ("story_linked_operating_driver_rows", _STORY_MIN_OPERATING_DRIVER_CHARS),
+            ("story_kpi_to_track_rows", _STORY_MIN_KPI_CHARS),
+        )
+        for range_name, min_chars in grid_column_rules:
+            range_rows = blocks.get(range_name, [])
+            if len(range_rows) < len(_STORY_REQUIRED_SCENARIOS):
+                issues.append(
+                    "Story contract failed: missing scenario linkage rows for "
+                    f"{range_name} (rows={len(range_rows)}, required={len(_STORY_REQUIRED_SCENARIOS)})."
+                )
+                continue
+            for row_idx, scenario in enumerate(_STORY_REQUIRED_SCENARIOS):
+                text = str(_cell_at(range_rows, row_idx, 0) or "").strip()
+                if len(text) < min_chars:
+                    issues.append(
+                        "Story contract failed: under-filled scenario linkage field "
+                        f"({range_name}, scenario={scenario}, chars={len(text)}, required>={min_chars})."
+                    )
+
+        memo_hook_entries = [
+            str(cell).strip()
+            for cell in _flatten_cells(blocks.get("story_memo_hooks", []))
+            if str(cell or "").strip()
+        ]
+        if len(memo_hook_entries) < _STORY_MIN_MEMO_HOOKS:
+            issues.append(
+                "Story contract failed: story_memo_hooks is under-filled "
+                f"(entries={len(memo_hook_entries)}, required>={_STORY_MIN_MEMO_HOOKS})."
+            )
+        unlinked_hook_entries = [
+            entry
+            for entry in memo_hook_entries
+            if not _STORY_MEMO_HOOK_RANGE_TOKEN_RE.search(entry)
+        ]
+        if unlinked_hook_entries:
+            issues.append(
+                "Story contract failed: story_memo_hooks entries must reference sheet range tokens "
+                "(expected inp_/out_/sens_/comps_ tokens)."
+            )
 
         citation_entries = [
             str(cell).strip()
@@ -1939,6 +2167,103 @@ class LangGraphFinanceAgent:
             issues.append(
                 "Story contract failed: citation entries must include URLs, source tags, or citation IDs."
             )
+        return issues
+
+    def _enforce_sources_story_citation_writeback(
+        self,
+        *,
+        spreadsheet_id: str,
+        run_id: str,
+        artifact_path: str,
+    ) -> list[str]:
+        issues: list[str] = []
+        blocks = self.sheets_engine.read_named_ranges(
+            spreadsheet_id,
+            ["sources_table", "story_grid_citations"],
+            value_render_option="FORMATTED_VALUE",
+        )
+        sources_rows = [
+            row for row in blocks.get("sources_table", []) if isinstance(row, list) and _row_has_values(row)
+        ]
+        story_entries = [
+            str(cell).strip()
+            for cell in _flatten_cells(blocks.get("story_grid_citations", []))
+            if str(cell or "").strip()
+        ]
+
+        if len(sources_rows) >= _SOURCES_MIN_ROWS and len(story_entries) >= _STORY_MIN_CITATION_ROWS:
+            return issues
+
+        artifact_file = Path(artifact_path.strip()) if artifact_path.strip() else self._tool_call_artifact_path(run_id)
+        citation_rows = _build_sources_rows_from_tool_artifact(
+            artifact_path=artifact_file,
+            max_rows=_AUTO_SOURCES_MAX_ROWS,
+        )
+        if len(sources_rows) < _SOURCES_MIN_ROWS:
+            if len(citation_rows) >= _SOURCES_MIN_ROWS:
+                self.sheets_engine.write_named_table(
+                    spreadsheet_id=spreadsheet_id,
+                    table_name="sources_table",
+                    rows=citation_rows,
+                )
+                self._persist_tool_call_artifact(
+                    run_id=run_id,
+                    phase="finalize",
+                    tool_name="orchestrator_guardrail",
+                    args={"action": "sources_autofill", "rows": len(citation_rows)},
+                    result={"ok": True, "rows_written": len(citation_rows)},
+                    status="ok",
+                    mode="orchestrator_guardrail",
+                )
+            else:
+                issues.append(
+                    "Auto-citation writeback failed: insufficient citation rows to populate sources_table."
+                )
+
+        refreshed = self.sheets_engine.read_named_ranges(
+            spreadsheet_id,
+            ["sources_table", "story_grid_citations"],
+            value_render_option="FORMATTED_VALUE",
+        )
+        story_entries = [
+            str(cell).strip()
+            for cell in _flatten_cells(refreshed.get("story_grid_citations", []))
+            if str(cell or "").strip()
+        ]
+        if len(story_entries) >= _STORY_MIN_CITATION_ROWS:
+            return issues
+
+        refreshed_sources_rows = [
+            row
+            for row in refreshed.get("sources_table", [])
+            if isinstance(row, list) and _row_has_values(row)
+        ]
+        citation_tokens = _collect_story_citation_tokens(refreshed_sources_rows)
+        if len(citation_tokens) < _STORY_MIN_CITATION_ROWS:
+            issues.append(
+                "Auto-citation writeback failed: insufficient source citation tokens for story_grid_citations."
+            )
+            return issues
+
+        self.sheets_engine.write_named_ranges(
+            spreadsheet_id,
+            {
+                "story_grid_citations": [
+                    [citation_tokens[0]],
+                    [citation_tokens[1]],
+                    [citation_tokens[2]],
+                ]
+            },
+        )
+        self._persist_tool_call_artifact(
+            run_id=run_id,
+            phase="finalize",
+            tool_name="orchestrator_guardrail",
+            args={"action": "story_citations_autofill", "count": _STORY_MIN_CITATION_ROWS},
+            result={"ok": True, "entries_written": _STORY_MIN_CITATION_ROWS},
+            status="ok",
+            mode="orchestrator_guardrail",
+        )
         return issues
 
 
@@ -2145,6 +2470,144 @@ def _extract_citations(payload: dict[str, Any]) -> tuple[int, list[str]]:
     return len(citation_items), sources
 
 
+def _build_sources_rows_from_tool_artifact(
+    *,
+    artifact_path: Path,
+    max_rows: int,
+) -> list[list[str]]:
+    citation_items = _collect_citation_items_from_tool_artifact(artifact_path)
+    if not citation_items:
+        return []
+
+    rows: list[list[str]] = []
+    seen_keys: set[tuple[str, str, str]] = set()
+    source_counts: dict[str, int] = {}
+    for citation in citation_items:
+        source = str(citation.get("source") or "unknown").strip()
+        endpoint = str(citation.get("endpoint") or "unknown_endpoint").strip()
+        url = str(citation.get("url") or "").strip()
+        if not (url.startswith("http://") or url.startswith("https://")):
+            continue
+        dedupe_key = (source.casefold(), endpoint.casefold(), url)
+        if dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+
+        source_counts[source] = source_counts.get(source, 0) + 1
+        idx = source_counts[source]
+        as_of = str(citation.get("accessed_at_utc") or "").strip()
+        if not _looks_like_iso_datetime(as_of):
+            as_of = _utc_now_iso()
+        note = str(citation.get("note") or "").strip() or "Auto-curated from tool-call artifacts."
+        metric = str(citation.get("metric") or "").strip()
+        value = str(citation.get("value") or "").strip()
+        unit = str(citation.get("unit") or "").strip()
+        transform = str(citation.get("transform") or "").strip() or "tool_call_artifact_capture"
+        citation_id = _make_citation_id(source=source, endpoint=endpoint, ordinal=idx)
+
+        rows.append(
+            [
+                "auto_capture",
+                source or "unknown",
+                endpoint or "source_record",
+                url,
+                as_of,
+                note,
+                metric,
+                value,
+                unit,
+                transform,
+                citation_id,
+            ]
+        )
+        if len(rows) >= max_rows:
+            break
+
+    return rows
+
+
+def _collect_citation_items_from_tool_artifact(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    items: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        raw = line.strip()
+        if not raw:
+            continue
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        for citation in _extract_citation_items_from_payload(record.get("result")):
+            source = str(citation.get("source") or "").strip()
+            endpoint = str(citation.get("endpoint") or "").strip()
+            url = str(citation.get("url") or "").strip()
+            accessed = str(citation.get("accessed_at_utc") or "").strip()
+            key = (source, endpoint, url, accessed)
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(citation)
+    return items
+
+
+def _extract_citation_items_from_payload(value: Any) -> list[dict[str, Any]]:
+    collected: list[dict[str, Any]] = []
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, child in node.items():
+                if key == "citations" and isinstance(child, list):
+                    for row in child:
+                        if isinstance(row, dict):
+                            collected.append(row)
+                else:
+                    _walk(child)
+            return
+        if isinstance(node, list):
+            for child in node:
+                _walk(child)
+
+    _walk(value)
+    return collected
+
+
+def _collect_story_citation_tokens(rows: list[list[Any]]) -> list[str]:
+    tokens: list[str] = []
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        citation_id = str(_cell_at([row], 0, 10) or "").strip()
+        url = str(_cell_at([row], 0, 3) or "").strip()
+        if citation_id and _looks_like_citation_id(citation_id):
+            tokens.append(citation_id)
+        elif url.startswith("http://") or url.startswith("https://"):
+            tokens.append(url)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        if token in seen:
+            continue
+        seen.add(token)
+        deduped.append(token)
+    return deduped
+
+
+def _make_citation_id(*, source: str, endpoint: str, ordinal: int) -> str:
+    source_token = "".join(
+        char for char in source.upper() if char.isalnum() or char in {"_", "-"}
+    )[:20] or "SRC"
+    endpoint_token = "".join(
+        char for char in endpoint.upper() if char.isalnum() or char in {"_", "-"}
+    )[:20] or "EP"
+    return f"SRC-{source_token}-{endpoint_token}-{ordinal:03d}"
+
+
 def _truncate_text(value: str, *, limit: int) -> str:
     if len(value) <= limit:
         return value
@@ -2240,6 +2703,34 @@ def _flatten_cells(rows: list[list[Any]]) -> list[Any]:
 def _flatten_text(rows: list[list[Any]]) -> str:
     chunks = [str(cell).strip() for cell in _flatten_cells(rows) if str(cell or "").strip()]
     return " ".join(chunks)
+
+
+def _validate_comps_note_quality(*, note: str, row_idx: int) -> list[str]:
+    issues: list[str] = []
+    text = note.strip()
+    if len(text) < _COMPS_ROW_NOTE_MIN_CHARS:
+        issues.append(
+            "Comps contract failed: Notes row "
+            f"{row_idx} is too short for IB-grade rationale "
+            f"(chars={len(text)}, required>={_COMPS_ROW_NOTE_MIN_CHARS})."
+        )
+        return issues
+
+    lowered = text.casefold()
+    signal_count = sum(
+        1 for token in _COMPS_ROW_NOTE_REQUIRED_SIGNALS if token in lowered
+    )
+    if signal_count < 3:
+        issues.append(
+            "Comps contract failed: Notes row "
+            f"{row_idx} is missing business/execution/valuation rationale depth."
+        )
+    if text.count(".") < 2 and text.count(";") < 2:
+        issues.append(
+            "Comps contract failed: Notes row "
+            f"{row_idx} must include multi-part analysis."
+        )
+    return issues
 
 
 def _looks_like_iso_datetime(value: str) -> bool:

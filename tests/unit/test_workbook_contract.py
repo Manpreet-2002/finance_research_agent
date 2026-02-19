@@ -21,3 +21,6 @@ def test_phase_v1_contract_requires_dynamic_comps_and_table_ranges() -> None:
     assert "log_assumptions_table" in required
     assert "log_story_table" in required
     assert "checks_statuses" in required
+    assert "story_core_narrative_rows" in required
+    assert "story_linked_operating_driver_rows" in required
+    assert "story_kpi_to_track_rows" in required

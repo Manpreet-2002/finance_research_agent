@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, is_dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 import logging
@@ -61,6 +61,103 @@ _COMPS_REQUIRED_HEADER_FIRST = "ticker"
 _COMPS_REQUIRED_HEADER_LAST = "notes"
 _COMPS_ALLOWED_WRITE_TABLE = "comps_table_full"
 _COMPS_TABLE_NAMES: frozenset[str] = frozenset({"comps_table", "comps_table_full"})
+_COMPS_NON_NUMERIC_HEADERS: frozenset[str] = frozenset({"name"})
+_LOG_TABLE_SCHEMA_WIDTHS: dict[str, int] = {
+    "log_actions_table": 9,
+    "log_assumptions_table": 10,
+    "log_story_table": 9,
+}
+_LOG_TABLE_REQUIRED_COLUMN_INDEXES: dict[str, tuple[int, ...]] = {
+    "log_actions_table": (0, 1, 2),
+    "log_assumptions_table": (0, 1, 2),
+    "log_story_table": (0, 1, 2),
+}
+_SHEETS_MONEY_MM_RANGES: frozenset[str] = frozenset(
+    {
+        "inp_rev_ttm",
+        "inp_ebit_ttm",
+        "inp_da_ttm",
+        "inp_capex_ttm",
+        "inp_dNWC_ttm",
+        "inp_rd_ttm",
+        "inp_rent_ttm",
+        "inp_cash",
+        "inp_debt",
+        "inp_basic_shares",
+        "inp_tsm_tranche1_count_mm",
+        "comps_target_rev_ttm",
+        "comps_target_ebit_ttm",
+    }
+)
+_SHEETS_RATE_DECIMAL_RANGES: frozenset[str] = frozenset(
+    {
+        "inp_tax_ttm",
+        "inp_tax_norm",
+        "inp_rf",
+        "inp_erp",
+        "inp_kd",
+        "inp_dw",
+        "inp_gt",
+        "inp_g1",
+        "inp_g2",
+        "inp_g3",
+        "inp_g4",
+        "inp_g5",
+        "inp_m5",
+        "inp_m10",
+        "inp_w_pess",
+        "inp_w_base",
+        "inp_w_opt",
+        "inp_pess_g1",
+        "inp_pess_g2",
+        "inp_pess_g3",
+        "inp_pess_g4",
+        "inp_pess_g5",
+        "inp_pess_m5",
+        "inp_pess_m10",
+        "inp_pess_tax",
+        "inp_pess_wacc",
+        "inp_pess_gt",
+        "inp_base_g1",
+        "inp_base_g2",
+        "inp_base_g3",
+        "inp_base_g4",
+        "inp_base_g5",
+        "inp_base_m5",
+        "inp_base_m10",
+        "inp_base_tax",
+        "inp_base_wacc",
+        "inp_base_gt",
+        "inp_opt_g1",
+        "inp_opt_g2",
+        "inp_opt_g3",
+        "inp_opt_g4",
+        "inp_opt_g5",
+        "inp_opt_m5",
+        "inp_opt_m10",
+        "inp_opt_tax",
+        "inp_opt_wacc",
+        "inp_opt_gt",
+    }
+)
+_COMPS_ROW_NOTE_MIN_CHARS = 120
+_COMPS_ROW_NOTE_REQUIRED_SIGNALS: tuple[str, ...] = (
+    "business",
+    "execution",
+    "multiple",
+    "valuation",
+)
+_TABLE_ROWS_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "description": (
+        "2D table payload: rows -> columns. Each cell must be a scalar string "
+        "(numbers/dates/formulas should be passed as strings)."
+    ),
+    "items": {
+        "type": "array",
+        "items": {"type": "string"},
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -465,10 +562,7 @@ def build_phase_v1_tool_registry(
                         "properties": {
                             "spreadsheet_id": {"type": "string"},
                             "table_name": {"type": "string"},
-                            "rows": {
-                                "type": "array",
-                                "items": {"type": "array", "items": {"type": "string"}},
-                            },
+                            "rows": _TABLE_ROWS_SCHEMA,
                         },
                         "required": ["spreadsheet_id", "table_name", "rows"],
                     },
@@ -489,10 +583,7 @@ def build_phase_v1_tool_registry(
                         "properties": {
                             "spreadsheet_id": {"type": "string"},
                             "table_name": {"type": "string"},
-                            "rows": {
-                                "type": "array",
-                                "items": {"type": "array", "items": {"type": "string"}},
-                            },
+                            "rows": _TABLE_ROWS_SCHEMA,
                         },
                         "required": ["spreadsheet_id", "table_name", "rows"],
                     },
@@ -516,8 +607,58 @@ def _json_result(value: Any) -> dict[str, Any]:
 def _call_sheets_write(
     *, sheets_engine: SheetsEngine, spreadsheet_id: str, values: dict[str, Any]
 ) -> dict[str, Any]:
-    sheets_engine.write_named_ranges(spreadsheet_id=spreadsheet_id, values=values)
+    normalized_values = _normalize_named_range_values(values)
+    sheets_engine.write_named_ranges(spreadsheet_id=spreadsheet_id, values=normalized_values)
     return {"ok": True, "written_ranges": len(values)}
+
+
+def _normalize_named_range_values(values: dict[str, Any]) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    for name, value in values.items():
+        normalized[name] = _normalize_named_range_value(name=name, value=value)
+    return normalized
+
+
+def _normalize_named_range_value(*, name: str, value: Any) -> Any:
+    normalized_name = str(name or "").strip().lower()
+    numeric = _to_optional_numeric_scalar(value)
+    if numeric is None:
+        return value
+    if normalized_name in _SHEETS_MONEY_MM_RANGES and abs(numeric) >= 1_000_000:
+        normalized = numeric / 1_000_000
+        LOGGER.info(
+            "sheets_value_normalized range=%s rule=money_to_mm before=%s after=%s",
+            name,
+            numeric,
+            normalized,
+        )
+        return normalized
+    if normalized_name in _SHEETS_RATE_DECIMAL_RANGES and 1.0 < abs(numeric) <= 100.0:
+        normalized = numeric / 100.0
+        LOGGER.info(
+            "sheets_value_normalized range=%s rule=percent_to_decimal before=%s after=%s",
+            name,
+            numeric,
+            normalized,
+        )
+        return normalized
+    return value
+
+
+def _to_optional_numeric_scalar(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or text.startswith("="):
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 def _call_sheets_append_named_table_rows(
@@ -527,19 +668,20 @@ def _call_sheets_append_named_table_rows(
     table_name: str,
     rows: list[list[object]],
 ) -> dict[str, Any]:
+    prepared_rows = _prepare_named_table_rows(table_name=table_name, rows=rows)
     _validate_named_table_rows(
         sheets_engine=sheets_engine,
         spreadsheet_id=spreadsheet_id,
         table_name=table_name,
-        rows=rows,
+        rows=prepared_rows,
         operation="append",
     )
     sheets_engine.append_named_table_rows(
         spreadsheet_id=spreadsheet_id,
         table_name=table_name,
-        rows=rows,
+        rows=prepared_rows,
     )
-    return {"ok": True, "rows_appended": len(rows)}
+    return {"ok": True, "rows_appended": len(prepared_rows)}
 
 
 def _call_sheets_write_named_table(
@@ -549,19 +691,23 @@ def _call_sheets_write_named_table(
     table_name: str,
     rows: list[list[object]],
 ) -> dict[str, Any]:
+    prepared_rows = _prepare_named_table_rows(table_name=table_name, rows=rows)
     _validate_named_table_rows(
         sheets_engine=sheets_engine,
         spreadsheet_id=spreadsheet_id,
         table_name=table_name,
-        rows=rows,
+        rows=prepared_rows,
         operation="write",
     )
     sheets_engine.write_named_table(
         spreadsheet_id=spreadsheet_id,
         table_name=table_name,
-        rows=rows,
+        rows=prepared_rows,
     )
-    control_updates = _derive_comps_control_updates(table_name=table_name, rows=rows)
+    control_updates = _derive_comps_control_updates(
+        table_name=table_name,
+        rows=prepared_rows,
+    )
     if control_updates:
         sheets_engine.write_named_ranges(
             spreadsheet_id=spreadsheet_id,
@@ -569,7 +715,7 @@ def _call_sheets_write_named_table(
         )
     return {
         "ok": True,
-        "rows_written": len(rows),
+        "rows_written": len(prepared_rows),
         "control_ranges_written": len(control_updates),
     }
 
@@ -586,6 +732,9 @@ def _validate_named_table_rows(
     if normalized == "sources_table":
         _validate_sources_table_rows(rows)
         return
+    if normalized in _LOG_TABLE_SCHEMA_WIDTHS:
+        _validate_log_table_rows(table_name=normalized, rows=rows)
+        return
     if normalized in _COMPS_TABLE_NAMES:
         _validate_comps_table_rows(
             sheets_engine=sheets_engine,
@@ -595,6 +744,85 @@ def _validate_named_table_rows(
             operation=operation,
         )
         return
+
+
+def _prepare_named_table_rows(*, table_name: str, rows: list[list[object]]) -> list[list[object]]:
+    normalized = table_name.strip().lower()
+    if normalized == "sources_table":
+        return [_normalize_sources_row(row) for row in rows]
+    if normalized in _LOG_TABLE_SCHEMA_WIDTHS:
+        width = _LOG_TABLE_SCHEMA_WIDTHS[normalized]
+        return [_normalize_log_table_row(row, width=width) for row in rows]
+    return [list(row) for row in rows]
+
+
+def _normalize_sources_row(row: list[object]) -> list[object]:
+    values = [_normalize_table_text_cell(cell) for cell in row]
+    if len(values) == _SOURCES_TABLE_SCHEMA_WIDTH:
+        values[4] = _normalize_source_as_of_date(values[4])
+    return values
+
+
+def _normalize_log_table_row(row: list[object], *, width: int) -> list[object]:
+    values = [_normalize_table_text_cell(cell) for cell in row]
+    if len(values) > width:
+        overflow = " | ".join(
+            str(cell) for cell in values[width - 1 :] if str(cell).strip()
+        )
+        values = values[: width - 1] + [overflow]
+    if len(values) < width:
+        values.extend([""] * (width - len(values)))
+    return values
+
+
+def _normalize_table_text_cell(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value).strip()
+
+
+def _normalize_source_as_of_date(value: object) -> str:
+    text = _normalize_table_text_cell(value)
+    if not text:
+        return text
+    try:
+        serial = float(text)
+    except ValueError:
+        return text
+    if serial < 20_000 or serial > 80_000:
+        return text
+    converted = date(1899, 12, 30) + timedelta(days=int(serial))
+    return converted.isoformat()
+
+
+def _validate_log_table_rows(*, table_name: str, rows: list[list[object]]) -> None:
+    expected_width = _LOG_TABLE_SCHEMA_WIDTHS[table_name]
+    required_columns = _LOG_TABLE_REQUIRED_COLUMN_INDEXES.get(table_name, ())
+    for idx, row in enumerate(rows, start=1):
+        if not isinstance(row, list):
+            raise ValueError(
+                f"{table_name} row {idx} must be a list with {expected_width} columns."
+            )
+        if len(row) != expected_width:
+            raise ValueError(
+                f"{table_name} rows must use fixed {expected_width}-column schema "
+                f"(row={idx}, actual={len(row)})."
+            )
+        missing = [
+            col_idx + 1
+            for col_idx in required_columns
+            if str(row[col_idx] if col_idx < len(row) else "").strip() == ""
+        ]
+        if missing:
+            raise ValueError(
+                f"{table_name} missing required fields (row={idx}, columns={missing})."
+            )
 
 
 def _validate_sources_table_rows(rows: list[list[object]]) -> None:
@@ -624,6 +852,12 @@ def _validate_sources_table_rows(rows: list[list[object]]) -> None:
         if not (url.startswith("http://") or url.startswith("https://")):
             raise ValueError(
                 f"sources_table url must be absolute http(s) URL (row={idx}, value={url!r})."
+            )
+        as_of_date = str(row[4]).strip()
+        if not _looks_like_iso_date_or_datetime(as_of_date):
+            raise ValueError(
+                "sources_table as_of_date must be ISO date/datetime "
+                f"(row={idx}, value={as_of_date!r})."
             )
 
 
@@ -694,6 +928,7 @@ def _validate_comps_table_rows(
             raise ValueError(
                 f"comps_table_full missing Notes value in data row {row_idx}."
             )
+        _validate_comps_note_quality(note=notes, row_idx=row_idx)
 
 
 def _derive_comps_control_updates(
@@ -706,7 +941,14 @@ def _derive_comps_control_updates(
     last_idx = _last_non_empty_index(header)
     if last_idx < 1:
         return {}
-    metric_count = max(last_idx - 1, 0)
+    metric_count = 0
+    for col_idx in range(1, last_idx):
+        header_label = str(header[col_idx] if len(header) > col_idx else "").strip()
+        if not header_label:
+            continue
+        if header_label.casefold() in _COMPS_NON_NUMERIC_HEADERS:
+            continue
+        metric_count += 1
     peer_count = 0
     for row in rows[1:]:
         ticker = str(row[0] if row else "").strip()
@@ -728,6 +970,42 @@ def _read_target_ticker(*, sheets_engine: SheetsEngine, spreadsheet_id: str) -> 
     if not rows or not rows[0]:
         return ""
     return str(rows[0][0]).strip().upper()
+
+
+def _validate_comps_note_quality(*, note: str, row_idx: int) -> None:
+    normalized = note.strip()
+    if len(normalized) < _COMPS_ROW_NOTE_MIN_CHARS:
+        raise ValueError(
+            "comps_table_full Notes must be IB-grade and detailed "
+            f"(row={row_idx}, min_chars={_COMPS_ROW_NOTE_MIN_CHARS})."
+        )
+    lowered = normalized.casefold()
+    signal_count = sum(
+        1 for token in _COMPS_ROW_NOTE_REQUIRED_SIGNALS if token in lowered
+    )
+    if signal_count < 3:
+        raise ValueError(
+            "comps_table_full Notes must include business model, execution quality, "
+            f"and valuation-multiple rationale signals (row={row_idx})."
+        )
+    if normalized.count(".") < 2 and normalized.count(";") < 2:
+        raise ValueError(
+            "comps_table_full Notes must include a multi-part narrative "
+            f"(row={row_idx})."
+        )
+
+
+def _looks_like_iso_date_or_datetime(value: str) -> bool:
+    text = value.strip()
+    if not text:
+        return False
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        datetime.fromisoformat(text)
+        return True
+    except ValueError:
+        return False
 
 
 def _last_non_empty_index(row: list[object]) -> int:

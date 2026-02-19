@@ -32,9 +32,14 @@ description: Compose an investment-banking-style memo using sheet-grounded scena
 ## Workflow
 
 1. Load outputs from `Output`, `Sensitivity`, `Comps`, `Story`, `Sources`.
-2. Draft memo using weighted scenario framing.
-3. Attach range mapping for each headline number.
-4. Run citation and consistency audit before finalizing text.
+2. Populate Story scenario-linkage fields before final memo completion:
+- `story_core_narrative_rows` (`Story!C24:C26`)
+- `story_linked_operating_driver_rows` (`Story!D24:D26`)
+- `story_kpi_to_track_rows` (`Story!E24:E26`)
+- `story_memo_hooks` (`Story!C28:G30`)
+3. Draft memo using weighted scenario framing.
+4. Attach range mapping for each headline number.
+5. Run citation and consistency audit before finalizing text.
 
 ## Output contract
 
@@ -50,6 +55,7 @@ Return memo draft plus a mapping table:
 1. Memo passes quality rubric in shared references.
 2. Numeric claims are range-mapped and source-backed.
 3. Recommendation reflects scenario probabilities and sensitivity.
+4. Story grid has non-empty `Core narrative`, `Linked operating driver`, and `KPI to track` for pess/base/opt rows.
 
 ## Required references
 

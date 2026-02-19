@@ -69,6 +69,11 @@ description: Enforce named-range-only Google Sheets operations for valuation run
 - `story_sanity_checks` => `Story!B20`
 2. Do not write narrative text into legacy right-side blocks (`C:G`) for these fields.
 3. `story_grid_rows`, `story_grid_header`, and `story_grid_citations` remain table-style ranges and must be populated separately.
+4. Required scenario linkage columns:
+- `story_core_narrative_rows` => `Story!C24:C26`
+- `story_linked_operating_driver_rows` => `Story!D24:D26`
+- `story_kpi_to_track_rows` => `Story!E24:E26`
+5. Do not leave any scenario row blank for the three linkage columns above.
 
 ## Sources schema contract (must follow)
 
@@ -91,6 +96,20 @@ Every non-empty source row must:
 3. provide a stable `citation_id` that can be referenced from Story/Log rows.
 4. avoid mixed schemas across rows.
 
+## Agent Log schema contract (must follow)
+
+Named log tables are fixed-width:
+1. `log_actions_table`: 9 columns
+2. `log_assumptions_table`: 10 columns
+3. `log_story_table`: 9 columns
+
+Minimum required columns for each appended row:
+1. column 1: timestamp/phase marker
+2. column 2: category/action type
+3. column 3: substantive message
+
+Do not append 11-column source-style rows into `log_*_table`.
+
 ## Tool-specific rules
 
 1. `sheets_write_named_ranges`
@@ -103,12 +122,15 @@ Every non-empty source row must:
 
 3. `sheets_write_named_table`
 - `table_name` must reference a named table block (for example `comps_table`, `sources_table`, `log_actions_table`).
+- `rows` must be a rectangular 2D array (`[[cell_1, cell_2, ...], ...]`).
+- Every cell in `rows` must be a scalar string value (numbers, dates, and formulas are passed as strings).
 - Rows must match table width contract.
 - For comps, use `table_name=comps_table_full` and include header + all data rows in one write.
 
 4. `sheets_append_named_table_rows`
 - `table_name` must be a named table block.
 - Appends use first-empty-row policy inside the table bounds.
+- `rows` payload format is identical to `sheets_write_named_table`: rectangular 2D array of scalar string cells.
 - For `sources_table`, append rows only in the fixed 11-column schema above.
 - Do not use this tool for `comps_table` or `comps_table_full`.
 

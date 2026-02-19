@@ -37,7 +37,7 @@ description: Build pessimistic, base, and optimistic assumption vectors with exp
 2. Define per-scenario paths for growth, margin, tax, reinvestment, WACC, terminal growth.
 3. Set scenario weights based on probability, asymmetry, and evidence strength.
 4. Run preflight checks (`WACC > g`, weight sum, internal consistency).
-5. If uncertainty exceeds high-impact thresholds, ask decision-ready question.
+5. If uncertainty exceeds high-impact thresholds, apply conservative defaults, widen scenario spreads, and log confidence impacts.
 6. Write assumptions and rationale with confidence labels.
 
 ## Output contract
