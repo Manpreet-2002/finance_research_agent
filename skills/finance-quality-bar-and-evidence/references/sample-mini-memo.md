@@ -27,7 +27,7 @@ Weighted valuation is formula-linked in the workbook. No off-sheet weighting is 
 1. End-market demand remains resilient enough to support the base-case growth trajectory (`inp_base_g1..inp_base_g5`).
 2. Margin structure remains durable above prior-cycle median (`inp_base_m5`, `inp_base_m10`).
 3. Capital intensity does not rise enough to erase FCF conversion improvements.
-4. Cost of capital assumptions remain inside the sensitivity-tested range (`out_wacc`, `out_terminal_g`).
+4. Cost of capital assumptions remain inside the sensitivity-tested range (`OUT_WACC`, `out_terminal_g`).
 
 ## Evidence map
 

@@ -75,3 +75,12 @@ def test_skill_named_ranges_exist_in_template() -> None:
                     continue
                 missing.append((skill.skill_id, range_name))
     assert not missing
+
+
+def test_peer_skill_requires_fundamentals_tooling() -> None:
+    peer_skill = next(
+        skill
+        for skill in PHASE_V1_SKILLS
+        if skill.skill_id == "peer-set-and-competitive-analysis"
+    )
+    assert "finnhub_fundamentals" in peer_skill.required_tools

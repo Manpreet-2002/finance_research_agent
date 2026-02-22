@@ -1,6 +1,6 @@
 ---
 name: market-and-fundamentals-harvest
-description: Ingest market, capital structure, and operating metrics from primary vendors, reconcile with filings, and write normalized inputs to the workbook.
+description: Ingest market/capital-structure metrics from primary vendors, reconcile with filings, and write provenance without mutating orchestrator-owned core inputs.
 ---
 
 # Market And Fundamentals Harvest
@@ -25,9 +25,9 @@ description: Ingest market, capital structure, and operating metrics from primar
 
 ## Sheet targets
 
-- `inp_px`, `inp_cash`, `inp_debt`, `inp_basic_shares`
 - Reconciliation notes in `Agent Log`
 - Source rows in `Sources`
+- Core `Inputs` ranges are orchestrator-owned and treated as read-only in this phase.
 
 ## Workflow
 
@@ -35,7 +35,7 @@ description: Ingest market, capital structure, and operating metrics from primar
 2. Normalize units and timestamps.
 3. Reconcile shares/debt/cash with filing facts; log deltas.
 4. Escalate to contradiction checker if thresholds are breached.
-5. Write final inputs and provenance.
+5. Write provenance and reconciliation notes; do not overwrite orchestrator-owned core input ranges in this phase.
 
 ## Output contract
 

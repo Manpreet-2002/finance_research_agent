@@ -76,9 +76,8 @@ Critical named ranges (must be first-class interfaces):
 - TSM contract: `inp_tsm_tranche1_count_mm`, `inp_tsm_tranche1_strike`, `inp_tsm_tranche1_type`, `inp_tsm_tranche1_note`, `out_tsm_incremental_shares`, `out_tsm_diluted_shares`, `tsm_tranche_table`.
 - Sensitivity contract: `sens_base_value_ps`, `sens_wacc_vector`, `sens_terminal_g_vector`, `sens_grid_values`, `sens_grid_full`.
 - Comps contract (dynamic, industry-driven): `comps_target_rev_ttm`, `comps_target_ebit_ttm`, `comps_header`, `comps_firstrow`, `comps_table`, `comps_peer_tickers`, `comps_peer_names`, `comps_multiples_header`, `comps_multiples_values`, `comps_table_full`, `comps_method_note`, `comps_peer_count`, `comps_multiple_count`.
-- Comps legacy compatibility aliases (until migration complete): `comps_ev_ebit`, `comps_ev_sales`, `comps_pe`, `comps_notes`.
 - Story contract: `story_thesis`, `story_growth`, `story_profitability`, `story_reinvestment`, `story_risk`, `story_sanity_checks`, `story_grid_header`, `story_grid_rows`, `story_core_narrative_rows`, `story_linked_operating_driver_rows`, `story_kpi_to_track_rows`, `story_grid_citations`, `story_memo_hooks`.
-- Output contract: `out_value_ps_pess`, `out_value_ps_base`, `out_value_ps_opt`, `out_value_ps_weighted`, `out_equity_value_weighted`, `out_enterprise_value_weighted`, `out_wacc`, `out_terminal_g`.
+- Output contract: `out_value_ps_pess`, `out_value_ps_base`, `out_value_ps_opt`, `out_value_ps_weighted`, `out_equity_value_weighted`, `out_enterprise_value_weighted`, `OUT_WACC`, `out_terminal_g`.
 - Logbook anchors: `log_actions_firstrow`, `log_assumptions_firstrow`, `log_story_firstrow`.
 
 ## Complete template named-range inventory (authoritative)
@@ -220,7 +219,7 @@ Critical named ranges (must be first-class interfaces):
 - `out_value_ps_pess` => `'Output'!$C$15`
 - `out_value_ps_weighted` => `'Output'!$C$6`
 - `OUT_ValuePerShare` => `'Output'!$C$6`
-- `out_wacc` => `'Output'!$C$9`
+- `OUT_WACC` => `'Output'!$C$9`
 - `OUT_WACC` => `'Output'!$C$9`
 - `out_wacc_base` => `'Inputs'!C43`
 - `out_wacc_opt` => `'Inputs'!I43`
@@ -296,7 +295,12 @@ Story scenario-linkage anchors (mandatory for memo quality):
 2. `story_linked_operating_driver_rows` => `'Story'!$D$24:$D$26`
 3. `story_kpi_to_track_rows` => `'Story'!$E$24:$E$26`
 4. `story_grid_rows` => `'Story'!$B$24:$G$26` (must include non-empty linkage fields for Pessimistic/Neutral/Optimistic rows)
-5. `story_memo_hooks` => `'Story'!$C$28:$G$30` (claim-to-range hooks required before final memo completion)
+5. `story_memo_hooks` => `'Story'!$C$28:$G$30` with fixed 5-column row schema:
+- `claim_title` (resolved values, no raw range IDs)
+- `linked_ranges_csv` (comma-separated named-range tokens)
+- `memo_detail` (resolved-value narrative)
+- `confidence` (`High`/`Medium`/`Low`)
+- `citation_token`
 
 Sources schema contract (approved, fixed order in `B:L`):
 1. `field_block`
@@ -312,8 +316,7 @@ Sources schema contract (approved, fixed order in `B:L`):
 11. `citation_id`
 
 Migration note:
-1. Keep `comps_ev_ebit`, `comps_ev_sales`, `comps_pe`, and `comps_notes` as backward-compatible aliases during transition.
-2. Runtime logic must prioritize `comps_multiples_header` + `comps_multiples_values` over fixed-multiple aliases.
+1. Runtime logic must use dynamic comps interfaces only (`comps_table_full`, `comps_multiples_header`, `comps_multiples_values`).
 
 ## Anthropic skills patterns adopted (design basis)
 Based on Anthropic Agent Skills and Claude Code skills docs, V1 adopts these principles:
@@ -907,7 +910,7 @@ IB-manager critique (direct):
 5. Prompt/tool discipline is still weak in multi-turn behavior.
 - LLM attempted malformed range targets (for example `Inputs!inp_base_wacc`, `Output!out_value_ps_base`) and attempted write into formula-owned range (`calc_diluted_shares`), which guardrails correctly blocked.
 6. Named-range contract is inconsistent between template and skills.
-- `out_wacc` is missing while `OUT_WACC` exists, causing avoidable tool-call failures.
+- previous lowercase WACC alias references caused avoidable tool-call failures because template exposes only `OUT_WACC`.
 7. Runtime reliability remains below smoke-gate standard.
 - Run stalled in publish due blocking `model.invoke`; process required manual interrupt.
 
@@ -1084,7 +1087,7 @@ Why this is needed:
 Required changes to execute this policy:
 1. Template contract expansion (Google template first)
 - Add named ranges for every cell/block the agent needs to read/write; no operational dependency on ad-hoc A1.
-- Ensure all outputs have canonical + alias names where needed (for example both `out_wacc` and `OUT_WACC` if both are used).
+- Use only template-native output names (for example `OUT_WACC`), with no runtime alias dependence.
 - Add explicit table-body named ranges and row-anchor named ranges for:
   - `Sources`
   - `Agent Log` action/assumption/story tables
@@ -1328,6 +1331,164 @@ Execution alignment note:
 - `phase_v1.md`,
 - skills,
 - tools/orchestrator validators/tests.
+
+### Remediation package from AAPL smoke `smoke_20260219T062744Z`
+Observed artifact-level failures (Google Sheet ID `10Zaoix_ODt-2dihVrJLpngpm23UdVDpNbUfuJHN2eAA`):
+1. Comps control fields were overwritten after a valid table write:
+- `comps_table_full` ended with 5 populated rows including target (AAPL + 4 peers),
+- later write set `comps_peer_count=6` and `comps_multiple_count=6`, causing contract mismatch.
+2. Story grid contract drifted from template:
+- template expects `Story!B24:B26` labels: `Pessimistic`, `Neutral`, `Optimistic`,
+- run overwrote row labels with narrative pillars (`Ecosystem Lock-in`, `AI Cycle`, `Regulatory Risk`),
+- `story_linked_operating_driver_rows` had underfilled entries (`chars=10`, `chars=16`),
+- `story_memo_hooks` remained empty.
+3. Story citations were present but invalid for validator parsing:
+- entries were comma-joined IDs (`FIN-1, NEWS-1`) in single cells; validator treated them as invalid tokens.
+4. Validation phase attempted to satisfy story contract before `memo` phase, creating ordering conflict and repeated repair loops.
+
+Implementation plan (next package):
+1. Gate/order correction (orchestrator)
+- keep `validation` gate focused on sensitivity + comps + contradiction checks.
+- move story contract gating from `validation` to `memo` phase repair loop.
+- keep finalize as hard-stop integrity gate for all contracts.
+2. Comps contract hardening
+- set minimum comps row gate to `>=5` populated rows including target row.
+- keep target-first-row requirement (`row1 == inp_ticker`).
+- treat `comps_peer_count` / `comps_multiple_count` as derived controls:
+  - authoritative source is `comps_table_full`,
+  - auto-recompute after every `comps_table_full` write,
+  - block or auto-correct direct LLM writes to these control ranges.
+- retain IB-grade Notes validator (business model + execution + multiple rationale) with clearer repair feedback.
+3. Story contract hardening
+- lock template semantics for `story_grid_rows`:
+  - column 1 must remain `Pessimistic`, `Neutral`, `Optimistic`,
+  - linkage text must populate columns C:D:E for all three rows,
+  - disconfirming evidence (col F) and citations (col G) required for all rows.
+- treat `story_grid_header` as template-owned (read-only in runtime).
+- require non-empty `story_memo_hooks` (>=3 rows) with explicit range linkage tokens.
+4. Citation parsing/validation upgrade
+- accept comma/semicolon-delimited citation IDs in one cell by tokenizing and validating each token.
+- continue accepting explicit URLs and `source:` tags.
+- add normalization helper so story citation cells are rewritten into validator-safe format when needed.
+5. Phase-aware sheet write governance (code-level, not prompt-only)
+- enforce per-phase named-range allowlist in tool-call execution path.
+- prevent cross-domain writes in single call bundles (e.g., story writes plus comps controls).
+- remove broad global-range leakage from allowlist construction so phase restrictions are real.
+6. Skills alignment
+- `peer-set-and-competitive-analysis`:
+  - no manual writes to `comps_peer_count`/`comps_multiple_count`,
+  - write `comps_table_full` + `comps_method_note`; let controls auto-derive.
+- `story-to-valuation-linker` and `google-sheets-range-discipline`:
+  - explicitly preserve scenario labels in column B,
+  - require full C:D:E:F:G row completion for 3 scenarios,
+  - require `story_memo_hooks` population and citation token format.
+7. TODO backlog integration (from existing sections)
+- implement now:
+  - story citation contract enforcement (Non-comps TODO #2),
+  - status/governance consistency between phase completion and finalize (Non-comps TODO #3),
+  - source/schema discipline improvements already partially in place (Non-comps TODO #4/#8).
+- keep deferred for later package:
+  - advanced provenance-safe intermediate math and contradiction payload redesign (Post-smoke deferred TODO #1/#2),
+  - finalize auto-backfill minimization after core gates are stable (Post-smoke deferred TODO #8).
+8. Tests and acceptance
+- add unit tests for:
+  - comps min-row gate `>=5` and derived-control auto-correction,
+  - story scenario label lock and linkage-column completeness,
+  - citation tokenization (`FIN-1, NEWS-1` style) acceptance,
+  - phase allowlist enforcement and cross-domain write rejection.
+- smoke acceptance criteria:
+  - no `phase_validation_gate_failed` for story in `validation`,
+  - no comps control mismatch at finalize,
+  - populated `story_memo_hooks`,
+  - terminal status `COMPLETED` with zero story/comps finalize issues.
+
+### Implementation status update (2026-02-19)
+Completed in code/skills/tests (no smoke run executed in this step):
+1. Orchestrator gating/order:
+- removed story contract from validation gate collection,
+- added memo-phase story gate + repair loop,
+- kept finalize as hard-stop for comps/sensitivity/sources/story/formula integrity.
+2. Comps control hardening:
+- raised minimum comps rows to `>=5` including target row,
+- blocked direct runtime writes of `comps_peer_count`/`comps_multiple_count` in `sheets_write_named_ranges`,
+- kept controls auto-derived from `comps_table_full` write path.
+3. Story contract hardening:
+- added strict `story_grid_header` template check,
+- added disconfirming-evidence minimum quality check per scenario row,
+- kept scenario-label lock on `Pessimistic/Neutral/Optimistic`,
+- retained `story_memo_hooks` minimum and linkage-token checks.
+4. Citation parser hardening:
+- validator now tokenizes comma/semicolon/newline citation entries and validates each token.
+5. Phase-scoped sheet-write enforcement:
+- added code-level phase allowlist enforcement for named-range writes and named-table writes,
+- excluded global-skill range leakage from write allowlist construction,
+- added guardrail rejection for disallowed phase writes.
+6. Skill alignment updates:
+- updated `peer-set-and-competitive-analysis` (derived comps controls, >=5 rows including target),
+- updated `story-to-valuation-linker` (scenario-label preservation + disconfirming evidence + memo hooks),
+- updated `google-sheets-range-discipline` and `workbook-range-contract` reference (read-only `story_grid_header`, derived comps controls).
+7. Validation:
+- focused unit tests passed: `tests/unit/test_orchestrator_guardrails.py`, `tests/unit/test_llm_tools.py`, `tests/unit/test_skill_catalog.py` (`49 passed`).
+8. Google template named-range alignment:
+- verified with `scripts/upsert_template_named_ranges.py --dry-run` against template spreadsheet,
+- result: `create_or_update_requests=0` and all expected named ranges `KEEP` (already aligned).
+9. Drift remediation (AMZN vs morning AAPL behavior):
+- wired `peer-set-and-competitive-analysis` to include `finnhub_fundamentals` tools in validation so comps has numeric peer inputs (not just peer discovery/news),
+- removed legacy named-range aliasing; runtime now accepts only explicit current-template range names,
+- updated validation repair prompt to explicitly require `sheets_write_named_table(table_name=comps_table_full, ...)`,
+- kept named-table tool schema in Gemini-compatible string-cell form to avoid function declaration failures.
+
+### Implementation status update (2026-02-20) - GOOG valuation RCA remediation
+Completed in code/tests:
+1. Deterministic SEC overlay before sheet copy (R0 ordering hardening):
+- initialization now fetches SEC filing fundamentals deterministically and maps them into canonical named-range inputs before template copy/prefill write,
+- SEC overlay details are persisted in run metadata (`sec_overlay_report`) and canonical quality report (`canonical_quality_report["sec_overlay"]`),
+- high-drift overlay replacements append explicit rationale notes for auditability.
+2. Deterministic SEC-vs-sheet alignment gate:
+- added SEC alignment validation in `data_quality_checks` and again in `finalize`,
+- gate compares SEC-grounded values against core workbook inputs and raises blocking issues when drift exceeds threshold,
+- prevents runs from completing when filing-grounded fundamentals materially diverge from sheet state.
+3. Finnhub fundamentals parser hardening:
+- quarter selection now prefers actual quarter-like rows (filters out annual/FY rows when quarterly rows exist),
+- TTM aggregation now uses per-concept priority resolution (avoids double counting across synonymous concepts),
+- minimum-period enforcement added for quarterly sums (falls back to metrics when quarterly coverage is insufficient),
+- metric fallback share normalization updated to absolute-share semantics for revenue/cash derivation.
+4. Regression and guardrail test coverage:
+- updated/added unit tests for:
+  - metric fallback normalization behavior,
+  - insufficient-quarter fallback behavior,
+  - annual-row exclusion from quarterly TTM aggregation.
+- verified orchestrator and tool guardrails remain green with focused suites.
+5. Validation executed:
+- `PYTHONPATH=. uv run pytest -q tests/unit/test_finnhub_fundamentals.py tests/unit/test_orchestrator_guardrails.py` -> `29 passed`,
+- `PYTHONPATH=. uv run pytest -q tests/unit/test_llm_tools.py tests/unit/test_skill_catalog.py` -> `26 passed`,
+- `PYTHONPATH=. uv run pytest -q tests/unit/test_workbook_contract.py tests/unit/test_google_sheets_engine_ranges.py tests/unit/test_provider_factory.py tests/unit/test_data_service.py tests/unit/test_langchain_gemini.py` -> `17 passed`.
+
+### Implementation status update (2026-02-22) - Data collection + data-quality pipeline reengineer
+Completed in code/tests:
+1. Deterministic core-input reconciliation (pre-copy hard gate):
+- Added orchestrator-owned core baseline reconciliation before template copy using canonical + SEC overlay policy.
+- Run initialization now fails fast if reconciled baseline is missing/implausible for required core ranges.
+- Reconciled baseline is persisted in runtime state (`reconciled_core_inputs`) for downstream parity checks.
+2. Core-input immutability across LLM phases:
+- Phase named-range allowlist now strips orchestrator-owned core ranges from LLM writes in all phases.
+- Data collection skills still gather evidence/citations, but core valuation inputs are no longer mutable by phase LLM calls.
+3. Data-quality gate rewritten from tax-only repair to full-core deterministic repair:
+- Replaced legacy `inp_tax_ttm`-only repair path with full-core drift repair against reconciled baseline.
+- Added strict baseline-drift validation in `data_quality_checks` (blocking on missing/invalid/drifted core fields).
+- Added stronger plausibility checks (bounds + `EBIT` vs `Revenue` sanity).
+4. Sources reliability guardrail moved earlier:
+- Added deterministic `sources_table` auto-repair in `data_quality_checks` from run tool-call artifacts.
+- Data-quality phase now validates and repairs source schema before assumptions/model phases.
+5. Canonical dataset quality metadata strengthened:
+- Extended canonical quality report with `is_plausible`, `is_ready`, and `plausibility_issues`.
+- Orchestrator canonical readiness validation now fails on implausible/non-ready canonical payloads.
+6. Skill/catalog alignment updates:
+- Updated data-collection and data-quality skills to treat orchestrator-owned core inputs as read-only in phase execution.
+- Updated skill catalog writable ranges to remove legacy direct core-input write intents in data collection/data quality paths.
+7. Validation executed:
+- `PYTHONPATH=. uv run pytest -q tests/unit/test_orchestrator_guardrails.py tests/unit/test_llm_tools.py` -> `55 passed`.
+- `PYTHONPATH=. uv run pytest -q tests/unit/test_skill_catalog.py tests/unit/test_workbook_contract.py tests/unit/test_provider_factory.py tests/unit/test_data_service.py tests/unit/test_langchain_gemini.py` -> `16 passed`.
 
 ## Deliverables by end of V1
 - Google Sheets run artifact with full valuation, scenario analysis, sensitivity, competitive context, and logs.

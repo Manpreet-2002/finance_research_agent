@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from backend.app.tools.contracts import (
     CanonicalValuationDataset,
     CompanyFundamentals,
@@ -229,6 +231,56 @@ def test_llm_tool_registry_supports_named_sheet_tools() -> None:
     assert sheets.named_table_writes[0][1] == "sources_table"
 
 
+def test_llm_tool_registry_rejects_unknown_named_range_aliases_on_read() -> None:
+    class _StrictFakeSheetsEngine(_FakeSheetsEngine):
+        _KNOWN = {
+            "inp_ticker",
+            "inp_name",
+            "inp_px",
+            "inp_rf",
+            "inp_erp",
+            "inp_beta",
+            "inp_cash",
+            "inp_debt",
+            "inp_basic_shares",
+        }
+
+        def read_named_ranges(
+            self,
+            spreadsheet_id: str,
+            names: list[str],
+            *,
+            value_render_option: str = "UNFORMATTED_VALUE",
+        ) -> dict[str, list[list[object]]]:
+            unknown = [name for name in names if name not in self._KNOWN]
+            if unknown:
+                raise ValueError(
+                    "Unknown named ranges for read_named_ranges: "
+                    + ", ".join(sorted(unknown))
+                )
+            return super().read_named_ranges(
+                spreadsheet_id,
+                names,
+                value_render_option=value_render_option,
+            )
+
+    sheets = _StrictFakeSheetsEngine()
+    registry = build_phase_v1_tool_registry(
+        data_service=_FakeDataService(),
+        research_service=_FakeResearchService(),
+        sheets_engine=sheets,
+    )
+
+    with pytest.raises(ValueError, match="Unknown named ranges for read_named_ranges"):
+        registry.call(
+            "sheets_read_named_ranges",
+            {
+                "spreadsheet_id": "abc123",
+                "names": ["inp_base_growth_legacy", "inp_base_margin_legacy", "inp_ticker"],
+            },
+        )
+
+
 def test_llm_tool_registry_normalizes_sheet_units_before_write() -> None:
     sheets = _FakeSheetsEngine()
     registry = build_phase_v1_tool_registry(
@@ -262,6 +314,136 @@ def test_llm_tool_registry_normalizes_sheet_units_before_write() -> None:
     assert written["inp_ticker"] == "NVDA"
 
 
+def test_llm_tool_registry_normalizes_percent_tax_rate_before_write() -> None:
+    sheets = _FakeSheetsEngine()
+    registry = build_phase_v1_tool_registry(
+        data_service=_FakeDataService(),
+        research_service=_FakeResearchService(),
+        sheets_engine=sheets,
+    )
+
+    result = registry.call(
+        "sheets_write_named_ranges",
+        {
+            "spreadsheet_id": "abc123",
+            "values": {
+                "inp_tax_ttm": "19.6%",
+            },
+        },
+    )
+
+    assert result["ok"] is True
+    written = sheets.named_range_writes[-1][1]
+    assert written["inp_tax_ttm"] == pytest.approx(0.196)
+
+
+def test_llm_tool_registry_rejects_abs_tax_expense_for_tax_rate_field() -> None:
+    sheets = _FakeSheetsEngine()
+    registry = build_phase_v1_tool_registry(
+        data_service=_FakeDataService(),
+        research_service=_FakeResearchService(),
+        sheets_engine=sheets,
+    )
+
+    with pytest.raises(ValueError, match="inp_tax_ttm must be a realistic effective tax rate"):
+        registry.call(
+            "sheets_write_named_ranges",
+            {
+                "spreadsheet_id": "abc123",
+                "values": {
+                    "inp_tax_ttm": "15675100000",
+                },
+            },
+        )
+
+
+def test_llm_tool_registry_drops_direct_comps_control_writes() -> None:
+    sheets = _FakeSheetsEngine()
+    registry = build_phase_v1_tool_registry(
+        data_service=_FakeDataService(),
+        research_service=_FakeResearchService(),
+        sheets_engine=sheets,
+    )
+
+    result = registry.call(
+        "sheets_write_named_ranges",
+        {
+            "spreadsheet_id": "abc123",
+            "values": {
+                "comps_peer_count": 6,
+                "comps_multiple_count": 4,
+            },
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["dropped_ranges"] == ["comps_multiple_count", "comps_peer_count"]
+    assert result["written_ranges"] == 0
+    assert sheets.named_range_writes == []
+
+
+def test_llm_tool_registry_rejects_story_and_comps_write_mix() -> None:
+    sheets = _FakeSheetsEngine()
+    registry = build_phase_v1_tool_registry(
+        data_service=_FakeDataService(),
+        research_service=_FakeResearchService(),
+        sheets_engine=sheets,
+    )
+
+    with pytest.raises(ValueError, match="Do not mix story_\\* and comps_\\*"):
+        registry.call(
+            "sheets_write_named_ranges",
+            {
+                "spreadsheet_id": "abc123",
+                "values": {
+                    "story_thesis": "Narrative text",
+                    "comps_peer_count": 6,
+                },
+            },
+        )
+
+
+def test_llm_tool_registry_rejects_runtime_read_only_story_header_write() -> None:
+    sheets = _FakeSheetsEngine()
+    registry = build_phase_v1_tool_registry(
+        data_service=_FakeDataService(),
+        research_service=_FakeResearchService(),
+        sheets_engine=sheets,
+    )
+
+    with pytest.raises(ValueError, match="runtime read-only ranges"):
+        registry.call(
+            "sheets_write_named_ranges",
+            {
+                "spreadsheet_id": "abc123",
+                "values": {
+                    "story_grid_header": [["Scenario", "Core narrative"]],
+                },
+            },
+        )
+
+
+def test_llm_tool_registry_rejects_runtime_status_writes() -> None:
+    sheets = _FakeSheetsEngine()
+    registry = build_phase_v1_tool_registry(
+        data_service=_FakeDataService(),
+        research_service=_FakeResearchService(),
+        sheets_engine=sheets,
+    )
+
+    with pytest.raises(ValueError, match="runtime read-only ranges"):
+        registry.call(
+            "sheets_write_named_ranges",
+            {
+                "spreadsheet_id": "abc123",
+                "values": {
+                    "log_status": "COMPLETED",
+                    "log_end_ts": "2026-02-20T00:00:00Z",
+                },
+            },
+        )
+
+
 def test_llm_tool_registry_rejects_malformed_sources_table_schema() -> None:
     sheets = _FakeSheetsEngine()
     registry = build_phase_v1_tool_registry(
@@ -283,6 +465,56 @@ def test_llm_tool_registry_rejects_malformed_sources_table_schema() -> None:
         assert "fixed 11-column schema" in str(exc)
     else:  # pragma: no cover - defensive
         raise AssertionError("Expected ValueError for malformed sources_table row")
+
+
+def test_llm_tool_registry_strips_sources_header_row_on_write() -> None:
+    sheets = _FakeSheetsEngine()
+    registry = build_phase_v1_tool_registry(
+        data_service=_FakeDataService(),
+        research_service=_FakeResearchService(),
+        sheets_engine=sheets,
+    )
+
+    result = registry.call(
+        "sheets_write_named_table",
+        {
+            "spreadsheet_id": "abc123",
+            "table_name": "sources_table",
+            "rows": [
+                [
+                    "field_block",
+                    "source_type",
+                    "dataset_doc",
+                    "url",
+                    "as_of_date",
+                    "notes",
+                    "metric",
+                    "value",
+                    "unit",
+                    "transform",
+                    "citation_id",
+                ],
+                [
+                    "inputs_ttm",
+                    "SEC EDGAR",
+                    "Company Facts",
+                    "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json",
+                    "2026-02-16",
+                    "Primary filing source.",
+                    "revenue_ttm",
+                    "100.0",
+                    "USDm",
+                    "ttm_rollup",
+                    "SRC-SEC-1",
+                ],
+            ],
+        },
+    )
+
+    assert result["ok"] is True
+    written_rows = sheets.named_table_writes[-1][2]
+    assert len(written_rows) == 1
+    assert written_rows[0][0] == "inputs_ttm"
 
 
 def test_llm_tool_registry_rejects_comps_append_operations() -> None:
@@ -423,6 +655,48 @@ def test_llm_tool_registry_canonical_sheet_inputs_include_tsm_prefill() -> None:
     assert result["result"]["artifact_path"].startswith("artifacts/canonical_datasets/")
     assert len(result["result"]["artifact_sha256"]) == 64
     assert result["result"]["quality_report"]["is_complete"] is True
+    artifact_path = Path(result["result"]["artifact_path"])
+    if artifact_path.exists():
+        artifact_path.unlink()
+
+
+class _ImplausibleDataService(_FakeDataService):
+    def build_canonical_dataset(self, ticker: str) -> CanonicalValuationDataset:
+        dataset = super().build_canonical_dataset(ticker)
+        market = dataset.market
+        return CanonicalValuationDataset(
+            ticker=dataset.ticker,
+            fundamentals=dataset.fundamentals,
+            market=MarketSnapshot(
+                ticker=market.ticker,
+                price=-5.0,
+                beta=market.beta,
+                market_cap=market.market_cap,
+                shares_outstanding=market.shares_outstanding,
+                captured_at_utc=market.captured_at_utc,
+            ),
+            rates=dataset.rates,
+            news=list(dataset.news),
+            citations=list(dataset.citations),
+            assumptions=dict(dataset.assumptions),
+            tsm=dataset.tsm,
+        )
+
+
+def test_llm_tool_registry_canonical_sheet_inputs_flags_implausible_values() -> None:
+    registry = build_phase_v1_tool_registry(
+        data_service=_ImplausibleDataService(),
+        research_service=_FakeResearchService(),
+        sheets_engine=None,
+    )
+
+    result = registry.call("fetch_canonical_sheet_inputs", {"ticker": "AAPL"})
+    quality = result["result"]["quality_report"]
+
+    assert quality["is_complete"] is True
+    assert quality["is_plausible"] is False
+    assert quality["is_ready"] is False
+    assert any("inp_px out of bounds" in issue for issue in quality["plausibility_issues"])
     artifact_path = Path(result["result"]["artifact_path"])
     if artifact_path.exists():
         artifact_path.unlink()

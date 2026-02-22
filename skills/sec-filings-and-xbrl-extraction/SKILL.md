@@ -1,6 +1,6 @@
 ---
 name: sec-filings-and-xbrl-extraction
-description: Retrieve and normalize SEC filing and XBRL fundamentals, then write source-backed accounting inputs and provenance to the valuation workbook.
+description: Retrieve and normalize SEC filing and XBRL fundamentals, then write filing provenance while keeping orchestrator-owned core inputs deterministic.
 ---
 
 # SEC Filings And XBRL Extraction
@@ -24,19 +24,20 @@ description: Retrieve and normalize SEC filing and XBRL fundamentals, then write
 
 ## Sheet targets
 
-- `Inputs` tab ranges for filing-grounded fundamentals (`inp_rev_ttm`, `inp_ebit_ttm`, `inp_tax_ttm`, etc.)
 - `Sources` tab citation rows with document IDs/timestamps
 - `Agent Log` extraction activity rows
+- Core `Inputs` ranges are orchestrator-owned; treat them as read-only evidence anchors in this phase.
 
 ## Workflow
 
 1. Resolve ticker to CIK and identify most recent relevant filings.
 2. Extract core facts with period and unit normalization.
 3. Check unit consistency (USD, millions vs actual).
-4. If conflicts exist with vendor data, apply source priority policy.
-5. Write normalized values to approved input ranges.
-6. Write provenance to `Sources` including accession IDs and retrieval timestamps.
-7. Log extraction method, caveats, and confidence.
+4. For taxes, map filing data to effective tax rate for `inp_tax_ttm` (decimal rate, not dollar tax expense).
+5. If conflicts exist with vendor data, apply source priority policy.
+6. Do not directly overwrite orchestrator-owned core inputs during this phase.
+7. Write provenance to `Sources` including accession IDs and retrieval timestamps.
+8. Log extraction method, caveats, and confidence.
 
 ## Output contract
 

@@ -36,7 +36,12 @@ description: Compose an investment-banking-style memo using sheet-grounded scena
 - `story_core_narrative_rows` (`Story!C24:C26`)
 - `story_linked_operating_driver_rows` (`Story!D24:D26`)
 - `story_kpi_to_track_rows` (`Story!E24:E26`)
-- `story_memo_hooks` (`Story!C28:G30`)
+- `story_memo_hooks` (`Story!C28:G30`) with 5 columns:
+- `claim_title` (resolved values; no raw range IDs)
+- `linked_ranges_csv` (comma-separated named-range IDs)
+- `memo_detail` (resolved value narrative)
+- `confidence` (`High`/`Medium`/`Low`)
+- `citation_token`
 3. Draft memo using weighted scenario framing.
 4. Attach range mapping for each headline number.
 5. Run citation and consistency audit before finalizing text.

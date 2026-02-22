@@ -28,7 +28,7 @@ OUTPUT_RANGES = [
     "out_value_per_share",
     "out_equity_value",
     "out_enterprise_value",
-    "out_wacc",
+    "OUT_WACC",
     "out_terminal_g",
     "out_diluted_shares",
     "out_run_id",
@@ -248,12 +248,12 @@ def _poll_outputs(sheets: Any, spreadsheet_id: str, timeout_seconds: int = 60) -
 
 def _run_guardrails(outputs: dict[str, Any], sheets_inputs: dict[str, Any]) -> list[str]:
     issues: list[str] = []
-    wacc = outputs.get("out_wacc")
+    wacc = outputs.get("OUT_WACC")
     terminal_g = outputs.get("out_terminal_g")
     rf = sheets_inputs.get("inp_rf")
     if isinstance(wacc, (int, float)) and isinstance(terminal_g, (int, float)):
         if not wacc > terminal_g:
-            issues.append(f"Hard fail: out_wacc ({wacc}) must be greater than out_terminal_g ({terminal_g}).")
+            issues.append(f"Hard fail: OUT_WACC ({wacc}) must be greater than out_terminal_g ({terminal_g}).")
     if isinstance(terminal_g, (int, float)) and isinstance(rf, (int, float)):
         if terminal_g > rf:
             issues.append(f"Warning: out_terminal_g ({terminal_g}) is greater than inp_rf ({rf}).")
@@ -588,7 +588,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "model": args.model_name,
             "status": status,
             "valueshare": outputs.get("out_value_per_share"),
-            "wacc": outputs.get("out_wacc"),
+            "wacc": outputs.get("OUT_WACC"),
             "g": outputs.get("out_terminal_g"),
             "tokens": args.tokens,
             "costusd": args.cost_usd,

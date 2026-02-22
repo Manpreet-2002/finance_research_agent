@@ -53,6 +53,10 @@ class FinanceAgentState(TypedDict, total=False):
     canonical_artifact_path: str
     canonical_artifact_sha256: str
     canonical_quality_report: dict[str, Any]
+    sec_overlay_report: dict[str, Any]
+    sec_overlay_named_ranges: dict[str, Any]
+    reconciled_core_inputs: dict[str, Any]
+    core_input_reconciliation_report: dict[str, Any]
     tool_call_artifact_path: str
 
 
@@ -73,6 +77,72 @@ _CANONICAL_REQUIRED_PREFILL_RANGES: tuple[str, ...] = (
     "inp_tsm_tranche1_type",
 )
 
+_SEC_FILING_TO_INPUT_RANGE_MAP: dict[str, str] = {
+    "revenue_ttm": "inp_rev_ttm",
+    "ebit_ttm": "inp_ebit_ttm",
+    "tax_rate_ttm": "inp_tax_ttm",
+    "da_ttm": "inp_da_ttm",
+    "capex_ttm": "inp_capex_ttm",
+    "delta_nwc_ttm": "inp_dNWC_ttm",
+    "rd_ttm": "inp_rd_ttm",
+    "rent_ttm": "inp_rent_ttm",
+    "cash": "inp_cash",
+    "debt": "inp_debt",
+    "basic_shares": "inp_basic_shares",
+}
+
+_SEC_ALIGNMENT_CORE_INPUT_RANGES: tuple[str, ...] = (
+    "inp_rev_ttm",
+    "inp_ebit_ttm",
+    "inp_cash",
+    "inp_debt",
+    "inp_basic_shares",
+)
+
+_SEC_ALIGNMENT_MAX_REL_DIFF = 0.25
+
+_ORCHESTRATOR_MANAGED_CORE_INPUT_RANGES: tuple[str, ...] = (
+    "inp_rev_ttm",
+    "inp_ebit_ttm",
+    "inp_tax_ttm",
+    "inp_cash",
+    "inp_debt",
+    "inp_basic_shares",
+    "inp_px",
+    "inp_rf",
+    "inp_erp",
+    "inp_beta",
+)
+
+_SEC_PREFERRED_CORE_INPUT_RANGES: tuple[str, ...] = (
+    "inp_rev_ttm",
+    "inp_ebit_ttm",
+    "inp_tax_ttm",
+    "inp_cash",
+    "inp_debt",
+    "inp_basic_shares",
+)
+
+_CORE_INPUT_RATE_RANGES: frozenset[str] = frozenset(
+    {"inp_tax_ttm", "inp_rf", "inp_erp"}
+)
+_CORE_INPUT_MONEY_MM_RANGES: frozenset[str] = frozenset(
+    {"inp_rev_ttm", "inp_ebit_ttm", "inp_cash", "inp_debt"}
+)
+_CORE_INPUT_SHARES_MM_RANGES: frozenset[str] = frozenset({"inp_basic_shares"})
+_CORE_INPUT_VALUE_BOUNDS: dict[str, tuple[float, float]] = {
+    "inp_rev_ttm": (0.0, 10_000_000.0),
+    "inp_ebit_ttm": (-5_000_000.0, 5_000_000.0),
+    "inp_tax_ttm": (-0.10, 0.60),
+    "inp_cash": (0.0, 5_000_000.0),
+    "inp_debt": (0.0, 5_000_000.0),
+    "inp_basic_shares": (0.0, 10_000_000.0),
+    "inp_px": (0.01, 20_000.0),
+    "inp_rf": (0.0, 0.15),
+    "inp_erp": (0.0, 0.20),
+    "inp_beta": (0.0, 5.0),
+}
+
 _REQUIRED_SCENARIO_OUTPUT_RANGES: tuple[str, ...] = (
     "out_value_ps_pess",
     "out_value_ps_base",
@@ -89,7 +159,7 @@ _FINAL_FORMULA_SCAN_RANGES: tuple[str, ...] = (
     "out_value_ps_weighted",
     "out_equity_value_weighted",
     "out_enterprise_value_weighted",
-    "out_wacc",
+    "OUT_WACC",
     "out_terminal_g",
     "sens_base_value_ps",
     "sens_grid_values",
@@ -107,8 +177,8 @@ _FORMULA_ERROR_TOKENS: tuple[str, ...] = (
     "#ERROR!",
 )
 
-_COMPS_MIN_PEERS = 3
-_COMPS_MIN_MULTIPLES = 3
+_COMPS_MIN_PEERS = 4
+_COMPS_MIN_MULTIPLES = 2
 _COMPS_MIN_NUMERIC_COVERAGE = 0.75
 _COMPS_METHOD_NOTE_MIN_CHARS = 80
 _COMPS_ROW_NOTE_MIN_CHARS = 120
@@ -126,8 +196,21 @@ _STORY_REQUIRED_SCENARIOS: tuple[str, ...] = ("pessimistic", "neutral", "optimis
 _STORY_MIN_CORE_NARRATIVE_CHARS = 30
 _STORY_MIN_OPERATING_DRIVER_CHARS = 20
 _STORY_MIN_KPI_CHARS = 8
+_STORY_MIN_DISCONFIRMING_EVIDENCE_CHARS = 20
 _STORY_MIN_MEMO_HOOKS = 3
 _STORY_MEMO_HOOK_RANGE_TOKEN_RE = re.compile(r"\b(inp_|out_|sens_|comps_)[A-Za-z0-9_]*")
+_STORY_MEMO_HOOK_RANGE_TOKEN_FULL_RE = re.compile(r"(?:inp_|out_|sens_|comps_)[A-Za-z0-9_]*\Z")
+_STORY_MEMO_HOOK_MIN_CLAIM_CHARS = 12
+_STORY_MEMO_HOOK_MIN_DETAIL_CHARS = 35
+_STORY_MEMO_HOOK_CONFIDENCE_LEVELS: frozenset[str] = frozenset({"high", "medium", "low"})
+_STORY_EXPECTED_GRID_HEADER: tuple[str, ...] = (
+    "scenario",
+    "core narrative",
+    "linked operating driver",
+    "kpi to track",
+    "disconfirming evidence",
+    "citation / source id",
+)
 _AUTO_SOURCES_MAX_ROWS = 40
 _SENSITIVITY_PLACEHOLDER_TOKENS: tuple[str, ...] = (
     "populate via agent scenario sweep",
@@ -140,6 +223,8 @@ _AUTO_RESIZE_PRESENTATION_TABS: tuple[str, ...] = (
 )
 _SOURCE_SCHEMA_WIDTH = 11
 _CITATION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,}$")
+_BASELINE_PHASE_WRITABLE_RANGES: frozenset[str] = frozenset()
+_BASELINE_PHASE_WRITABLE_TABLES: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -155,7 +240,7 @@ class LangGraphFinanceAgent:
     max_phase_turns: int = 10
     max_phase_wall_clock_seconds: float = 120.0
     max_llm_invoke_seconds: float = 600.0
-    max_validation_repair_passes: int = 2
+    max_validation_repair_passes: int = 5
     _tool_map: dict[str, StructuredTool] = field(default_factory=dict, init=False, repr=False)
     _graph: Any = field(default=None, init=False, repr=False)
     _logger: logging.Logger = field(default_factory=lambda: logging.getLogger("finance_research_agent.orchestrator"), init=False, repr=False)
@@ -238,6 +323,7 @@ class LangGraphFinanceAgent:
             "canonical_artifact_path": "",
             "canonical_artifact_sha256": "",
             "canonical_quality_report": {},
+            "sec_overlay_report": {},
             "tool_call_artifact_path": "",
         }
 
@@ -287,6 +373,10 @@ class LangGraphFinanceAgent:
         canonical_artifact_path = ""
         canonical_artifact_sha256 = ""
         canonical_quality_report: dict[str, Any] = {}
+        sec_overlay_report: dict[str, Any] = {}
+        sec_overlay_named_ranges: dict[str, Any] = {}
+        reconciled_core_inputs: dict[str, Any] = {}
+        core_input_reconciliation_report: dict[str, Any] = {}
         tool_call_artifact_path = str(self._tool_call_artifact_path(request.run_id))
 
         try:
@@ -350,6 +440,48 @@ class LangGraphFinanceAgent:
                     "Canonical dataset readiness check failed: "
                     + "; ".join(canonical_issues)
                 )
+
+            sec_overlay_named_ranges, sec_overlay_report = self._fetch_sec_overlay_named_ranges(
+                run_id=request.run_id,
+                ticker=ticker,
+                phase_name="initialize",
+                baseline_named_ranges=canonical_named_ranges,
+            )
+            if sec_overlay_named_ranges:
+                canonical_named_ranges.update(sec_overlay_named_ranges)
+                overlay_keys = sorted(sec_overlay_named_ranges.keys())
+                notes.append(
+                    "SEC filing overlay applied before sheet copy "
+                    f"(ranges={len(overlay_keys)}; keys={','.join(overlay_keys[:8])}"
+                    f"{'...' if len(overlay_keys) > 8 else ''})."
+                )
+            high_diff_ranges = sec_overlay_report.get("high_diff_ranges", [])
+            if high_diff_ranges:
+                notes.append(
+                    "SEC-vendor reconciliation corrected high-drift inputs "
+                    f"(threshold={_SEC_ALIGNMENT_MAX_REL_DIFF:.0%}; ranges={','.join(high_diff_ranges)})."
+                )
+            (
+                reconciled_core_inputs,
+                core_input_reconciliation_report,
+                core_reconciliation_issues,
+            ) = _reconcile_core_inputs(
+                canonical_named_ranges=canonical_named_ranges,
+                sec_named_ranges=sec_overlay_named_ranges,
+                core_range_names=_ORCHESTRATOR_MANAGED_CORE_INPUT_RANGES,
+                sec_preferred_ranges=_SEC_PREFERRED_CORE_INPUT_RANGES,
+            )
+            if core_reconciliation_issues:
+                raise RuntimeError(
+                    "Canonical core input reconciliation failed: "
+                    + "; ".join(core_reconciliation_issues)
+                )
+            canonical_named_ranges.update(reconciled_core_inputs)
+            canonical_quality_report = dict(canonical_quality_report)
+            canonical_quality_report["sec_overlay"] = sec_overlay_report
+            canonical_quality_report["core_input_reconciliation"] = (
+                core_input_reconciliation_report
+            )
             notes.append(
                 "Canonical dataset prepared before sheet copy "
                 f"(prefill_ranges={len(canonical_named_ranges)}; "
@@ -380,6 +512,7 @@ class LangGraphFinanceAgent:
             )
             template_named_ranges = self._validate_run_sheet_contract(spreadsheet_id)
             run_start_ts = str(state.get("start_ts_utc") or _utc_now_iso())
+            runtime_core_inputs = dict(reconciled_core_inputs)
             init_values: dict[str, Any] = {
                 "log_run_id": request.run_id,
                 "log_status": "RUNNING",
@@ -399,6 +532,14 @@ class LangGraphFinanceAgent:
                         and key_str in template_named_ranges
                     ):
                         init_values[key_str] = value
+                        if key_str in _ORCHESTRATOR_MANAGED_CORE_INPUT_RANGES:
+                            normalized_override = _normalize_core_input_value(
+                                key_str,
+                                value,
+                                from_expected=True,
+                            )
+                            if normalized_override is not None:
+                                runtime_core_inputs[key_str] = normalized_override
                     elif key_str.startswith("inp_") or key_str.startswith("log_"):
                         self._logger.warning(
                             "initialize_override_skipped_unknown_range run_id=%s range=%s",
@@ -428,6 +569,10 @@ class LangGraphFinanceAgent:
             "canonical_artifact_path": canonical_artifact_path,
             "canonical_artifact_sha256": canonical_artifact_sha256,
             "canonical_quality_report": canonical_quality_report,
+            "sec_overlay_report": sec_overlay_report,
+            "sec_overlay_named_ranges": sec_overlay_named_ranges,
+            "reconciled_core_inputs": runtime_core_inputs,
+            "core_input_reconciliation_report": core_input_reconciliation_report,
             "tool_call_artifact_path": tool_call_artifact_path,
         }
 
@@ -445,6 +590,14 @@ class LangGraphFinanceAgent:
                 ",".join(tool_names),
                 ",".join(skill.skill_id for skill in skill_specs),
             )
+            allowed_named_range_writes = self._phase_allowed_named_ranges(
+                phase=phase,
+                skill_specs=skill_specs,
+            )
+            allowed_named_table_writes = self._phase_allowed_named_tables(
+                phase=phase,
+                skill_specs=skill_specs,
+            )
             system_prompt = self._build_phase_system_prompt(
                 phase=phase,
                 skill_specs=skill_specs,
@@ -460,15 +613,41 @@ class LangGraphFinanceAgent:
                 expected_spreadsheet_id=str(state.get("spreadsheet_id") or ""),
                 run_id=str(state.get("run_id") or ""),
                 phase_name=phase.value,
+                allowed_named_range_writes=allowed_named_range_writes,
+                allowed_named_table_writes=allowed_named_table_writes,
             )
             phase_gate_issues: list[str] = []
             if phase == WorkflowPhase.DATA_QUALITY_CHECKS:
                 spreadsheet_id = str(state.get("spreadsheet_id") or "").strip()
+                expected_core_inputs = _normalize_core_input_payload(
+                    state.get("reconciled_core_inputs")
+                )
                 if not spreadsheet_id:
                     phase_gate_issues.append("Missing spreadsheet_id for data quality checks.")
                 else:
                     phase_gate_issues.extend(
-                        self._validate_data_quality_inputs(spreadsheet_id)
+                        self._repair_data_quality_inputs(
+                            spreadsheet_id=spreadsheet_id,
+                            run_id=str(state.get("run_id") or ""),
+                            phase_name=phase.value,
+                            expected_core_inputs=expected_core_inputs,
+                        )
+                    )
+                    phase_gate_issues.extend(
+                        self._validate_data_quality_inputs(
+                            spreadsheet_id,
+                            expected_core_inputs=expected_core_inputs,
+                        )
+                    )
+                    phase_gate_issues.extend(
+                        self._repair_sources_table_inputs(
+                            spreadsheet_id=spreadsheet_id,
+                            run_id=str(state.get("run_id") or ""),
+                            phase_name=phase.value,
+                        )
+                    )
+                    phase_gate_issues.extend(
+                        self._validate_sources_contract(spreadsheet_id)
                     )
                 if phase_gate_issues:
                     self._logger.warning(
@@ -503,11 +682,12 @@ class LangGraphFinanceAgent:
                         f"{user_prompt}\n\n"
                         "Validation gate failed. Repair ALL listed issues before ending this phase.\n"
                         "Rules:\n"
-                        "- Use only Google Sheets named-range tools.\n"
+                        "- Use only Google Sheets named-range/named-table tools.\n"
                         "- Keep valuation math in-sheet.\n"
+                        "- Pull numeric peer inputs first (fundamentals/market) and compute metrics before writing comps.\n"
                         "- For comps_table_full: header must start 'Ticker', end 'Notes', "
-                        "and include >=3 valuation multiples.\n"
-                        "- Populate Story required ranges and scenario linkage rows.\n"
+                        "and include >=2 valuation multiples.\n"
+                        "- You must execute sheets_write_named_table with table_name=comps_table_full in this repair pass.\n"
                         f"Current issues: {repair_issue_preview}"
                     )
                     repair_response, repair_events = self._run_phase_llm_turns(
@@ -517,6 +697,8 @@ class LangGraphFinanceAgent:
                         expected_spreadsheet_id=spreadsheet_id,
                         run_id=run_id,
                         phase_name=phase.value,
+                        allowed_named_range_writes=allowed_named_range_writes,
+                        allowed_named_table_writes=allowed_named_table_writes,
                     )
                     if repair_response:
                         response_text = "\n".join(
@@ -531,6 +713,64 @@ class LangGraphFinanceAgent:
                     if repair_events:
                         tool_events.extend(repair_events)
                     validation_repair_count += 1
+            if phase == WorkflowPhase.MEMO:
+                spreadsheet_id = str(state.get("spreadsheet_id") or "").strip()
+                run_id = str(state.get("run_id") or "")
+                memo_repair_count = 0
+                while True:
+                    phase_gate_issues = self._collect_memo_gate_issues(
+                        spreadsheet_id=spreadsheet_id,
+                    )
+                    if not phase_gate_issues:
+                        break
+                    self._logger.warning(
+                        "phase_memo_gate_failed run_id=%s repair=%s issues=%s",
+                        state.get("run_id"),
+                        memo_repair_count,
+                        phase_gate_issues,
+                    )
+                    if memo_repair_count >= self.max_validation_repair_passes:
+                        break
+
+                    repair_issue_preview = "; ".join(phase_gate_issues[:4])
+                    repair_prompt = (
+                        f"{user_prompt}\n\n"
+                        "Memo phase gate failed. Repair ALL listed story issues before ending this phase.\n"
+                        "Rules:\n"
+                        "- Use sheets_write_named_ranges for Story updates; do not use sheets_write_named_table for story_grid_rows.\n"
+                        "- Preserve Story scenario labels in story_grid_rows column 1: "
+                        "Pessimistic, Neutral, Optimistic.\n"
+                        "- Populate story_core_narrative_rows, story_linked_operating_driver_rows, "
+                        "story_kpi_to_track_rows for all three scenarios.\n"
+                        "- Populate disconfirming evidence and citations for all scenario rows.\n"
+                        "- Populate story_memo_hooks with >=3 rows and strict 5-column schema: "
+                        "[claim_title, linked_ranges_csv, memo_detail_with_resolved_values, confidence, citation_token].\n"
+                        "- Keep range IDs only in linked_ranges_csv; claim_title and memo_detail must use resolved values.\n"
+                        f"Current issues: {repair_issue_preview}"
+                    )
+                    repair_response, repair_events = self._run_phase_llm_turns(
+                        system_prompt=system_prompt,
+                        user_prompt=repair_prompt,
+                        tool_names=tool_names,
+                        expected_spreadsheet_id=spreadsheet_id,
+                        run_id=run_id,
+                        phase_name=phase.value,
+                        allowed_named_range_writes=allowed_named_range_writes,
+                        allowed_named_table_writes=allowed_named_table_writes,
+                    )
+                    if repair_response:
+                        response_text = "\n".join(
+                            filter(
+                                None,
+                                [
+                                    response_text,
+                                    f"[memo_repair_{memo_repair_count + 1}] {repair_response}",
+                                ],
+                            )
+                        )
+                    if repair_events:
+                        tool_events.extend(repair_events)
+                    memo_repair_count += 1
             self._logger.info(
                 "phase_end run_id=%s phase=%s tool_events=%s",
                 state.get("run_id"),
@@ -572,6 +812,139 @@ class LangGraphFinanceAgent:
 
         return _node
 
+    def _fetch_sec_overlay_named_ranges(
+        self,
+        *,
+        run_id: str,
+        ticker: str,
+        phase_name: str,
+        baseline_named_ranges: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        args = {"ticker": ticker.strip().upper()}
+        started = perf_counter()
+        try:
+            payload = self.tool_registry.call("fetch_sec_filing_fundamentals", args)
+        except Exception as exc:
+            self._persist_tool_call_artifact(
+                run_id=run_id,
+                phase=phase_name,
+                tool_name="fetch_sec_filing_fundamentals",
+                args=args,
+                result={"error": str(exc)},
+                status="error",
+                mode="orchestrator_guardrail",
+                duration_ms=(perf_counter() - started) * 1000.0,
+                guardrail="sec_overlay_fetch_failed",
+            )
+            self._logger.warning(
+                "sec_overlay_fetch_failed run_id=%s phase=%s ticker=%s error=%s",
+                run_id,
+                phase_name,
+                args["ticker"],
+                exc,
+            )
+            return {}, {
+                "status": "error",
+                "error": str(exc),
+                "high_diff_ranges": [],
+                "rows": [],
+            }
+
+        self._persist_tool_call_artifact(
+            run_id=run_id,
+            phase=phase_name,
+            tool_name="fetch_sec_filing_fundamentals",
+            args=args,
+            result=payload,
+            status="ok",
+            mode="orchestrator_guardrail",
+            duration_ms=(perf_counter() - started) * 1000.0,
+            guardrail="sec_overlay_prefill",
+        )
+
+        result_payload = payload.get("result", {}) if isinstance(payload, dict) else {}
+        fundamentals_payload = (
+            result_payload.get("fundamentals", {})
+            if isinstance(result_payload, dict)
+            else {}
+        )
+        if not isinstance(fundamentals_payload, dict):
+            return {}, {
+                "status": "missing_fundamentals",
+                "high_diff_ranges": [],
+                "rows": [],
+            }
+
+        sec_named_ranges = _sec_filing_named_ranges_from_payload(fundamentals_payload)
+        reconciliation = _build_named_range_reconciliation(
+            baseline_named_ranges=baseline_named_ranges,
+            sec_named_ranges=sec_named_ranges,
+            range_names=_SEC_ALIGNMENT_CORE_INPUT_RANGES,
+            rel_diff_threshold=_SEC_ALIGNMENT_MAX_REL_DIFF,
+        )
+        return sec_named_ranges, {
+            "status": "ok",
+            "overlay_range_count": len(sec_named_ranges),
+            "high_diff_ranges": reconciliation["high_diff_ranges"],
+            "rows": reconciliation["rows"],
+        }
+
+    def _validate_sec_filing_alignment(
+        self,
+        *,
+        spreadsheet_id: str,
+        run_id: str,
+        ticker: str,
+        phase_name: str,
+    ) -> list[str]:
+        if not ticker:
+            return []
+        sec_named_ranges, sec_report = self._fetch_sec_overlay_named_ranges(
+            run_id=run_id,
+            ticker=ticker,
+            phase_name=phase_name,
+            baseline_named_ranges={},
+        )
+        if sec_report.get("status") != "ok":
+            return []
+
+        core_sec_ranges = {
+            name: value
+            for name, value in sec_named_ranges.items()
+            if name in _SEC_ALIGNMENT_CORE_INPUT_RANGES and value not in (None, "")
+        }
+        if not core_sec_ranges:
+            return []
+
+        sheet_ranges = self.sheets_engine.read_named_ranges(
+            spreadsheet_id,
+            sorted(core_sec_ranges.keys()),
+            value_render_option="UNFORMATTED_VALUE",
+        )
+        issues: list[str] = []
+        for range_name, sec_value in core_sec_ranges.items():
+            sec_numeric = _to_float_cell(sec_value)
+            if sec_numeric in (None, 0):
+                continue
+            sheet_numeric = _to_float_cell(
+                _first_sheet_cell(sheet_ranges.get(range_name, []))
+            )
+            if sheet_numeric is None:
+                issues.append(
+                    "Data quality check failed: SEC alignment missing sheet value "
+                    f"for {range_name}."
+                )
+                continue
+            rel_diff = abs(sheet_numeric - sec_numeric) / abs(sec_numeric)
+            if rel_diff > _SEC_ALIGNMENT_MAX_REL_DIFF:
+                issues.append(
+                    "Data quality check failed: SEC alignment drift "
+                    f"{range_name} rel_diff={rel_diff:.1%} "
+                    f"(sheet={sheet_numeric:.4f}, sec={sec_numeric:.4f}, "
+                    f"threshold={_SEC_ALIGNMENT_MAX_REL_DIFF:.0%})."
+                )
+        return issues
+
     def _collect_validation_gate_issues(
         self,
         *,
@@ -591,8 +964,17 @@ class LangGraphFinanceAgent:
             )
         )
         issues.extend(self._validate_comps_contract(normalized_id))
-        issues.extend(self._validate_story_contract(normalized_id))
         return issues
+
+    def _collect_memo_gate_issues(
+        self,
+        *,
+        spreadsheet_id: str,
+    ) -> list[str]:
+        normalized_id = str(spreadsheet_id or "").strip()
+        if not normalized_id:
+            return ["Missing spreadsheet_id for memo story checks."]
+        return self._validate_story_contract(normalized_id)
 
     def _finalize_node(self, state: FinanceAgentState) -> FinanceAgentState:
         notes = list(state.get("notes") or [])
@@ -615,6 +997,12 @@ class LangGraphFinanceAgent:
             )
             if auto_citation_issues:
                 notes.extend(auto_citation_issues)
+            story_hook_issues = self._enforce_story_hook_value_writeback(
+                spreadsheet_id=spreadsheet_id,
+                run_id=str(state.get("run_id") or ""),
+            )
+            if story_hook_issues:
+                notes.extend(story_hook_issues)
 
             outputs = self.sheets_engine.read_outputs(spreadsheet_id)
             validation_issues.extend(self._validate_outputs(outputs))
@@ -628,6 +1016,14 @@ class LangGraphFinanceAgent:
             validation_issues.extend(self._validate_comps_contract(spreadsheet_id))
             validation_issues.extend(self._validate_sources_contract(spreadsheet_id))
             validation_issues.extend(self._validate_story_contract(spreadsheet_id))
+            validation_issues.extend(
+                self._validate_sec_filing_alignment(
+                    spreadsheet_id=spreadsheet_id,
+                    run_id=str(state.get("run_id") or ""),
+                    ticker=str(state.get("ticker") or ""),
+                    phase_name="finalize",
+                )
+            )
         except Exception as exc:
             status = "FAILED"
             validation_issues.append(f"Output read/validation failed: {exc}")
@@ -699,7 +1095,7 @@ class LangGraphFinanceAgent:
                 self.llm_client.model,
                 status,
                 outputs.get("out_value_ps_weighted"),
-                outputs.get("out_wacc"),
+                outputs.get("OUT_WACC"),
                 outputs.get("out_terminal_g"),
                 "",
                 "",
@@ -873,6 +1269,8 @@ class LangGraphFinanceAgent:
         expected_spreadsheet_id: str,
         run_id: str,
         phase_name: str,
+        allowed_named_range_writes: tuple[str, ...] = (),
+        allowed_named_table_writes: tuple[str, ...] = (),
     ) -> tuple[str, list[dict[str, Any]]]:
         if not tool_names:
             chat_model = self.llm_client.get_chat_model()
@@ -971,12 +1369,12 @@ class LangGraphFinanceAgent:
                 final_response = _message_content_to_text(ai_message.content)
                 tool_calls = list(getattr(ai_message, "tool_calls", []) or [])
                 if not tool_calls:
-                    validation_contract_issues = self._validation_exit_contract_issues(
+                    phase_contract_issues = self._phase_exit_contract_issues(
                         phase_name=phase_name,
                         spreadsheet_id=expected_spreadsheet_id,
                     )
-                    if validation_contract_issues:
-                        issue_preview = "; ".join(validation_contract_issues[:3])
+                    if phase_contract_issues:
+                        issue_preview = "; ".join(phase_contract_issues[:3])
                         tool_events.append(
                             {
                                 "tool": "__phase_guardrail__",
@@ -984,27 +1382,40 @@ class LangGraphFinanceAgent:
                                 "citation_count": 0,
                                 "citation_sources": [],
                                 "guardrail": (
-                                    "validation_contract_incomplete "
+                                    "phase_contract_incomplete "
                                     f"issues={issue_preview}"
                                 ),
                             }
                         )
                         if turn_idx < (self.max_phase_turns - 1):
+                            if phase_name == WorkflowPhase.MEMO.value:
+                                continuation_message = (
+                                    "Memo phase cannot complete until Story contracts are satisfied.\n"
+                                    "Fix now with Google Sheets named-range tools:\n"
+                                    "1. Keep story_grid_rows scenario labels as Pessimistic/Neutral/Optimistic.\n"
+                                    "2. Populate story_core_narrative_rows, "
+                                    "story_linked_operating_driver_rows, and story_kpi_to_track_rows.\n"
+                                    "3. Populate story_memo_hooks using 5-column rows: "
+                                    "[claim_title, linked_ranges_csv, memo_detail_with_resolved_values, confidence, citation_token].\n"
+                                    "4. Keep range IDs only in linked_ranges_csv; do not leave raw range IDs in prose fields.\n"
+                                    "5. Populate story_grid_citations with valid citation tokens.\n"
+                                    f"Current issues: {issue_preview}"
+                                )
+                            else:
+                                continuation_message = (
+                                    "Validation phase cannot complete until validation contracts are satisfied.\n"
+                                    "Fix now with Google Sheets named-range tools:\n"
+                                    "1. Repair comps_table_full with >=2 valuation multiples and IB-grade notes.\n"
+                                    "2. Ensure first data row ticker equals inp_ticker and control ranges are set.\n"
+                                    "3. Ensure sensitivity grid is numeric and fully populated.\n"
+                                    f"Current issues: {issue_preview}"
+                                )
                             messages.append(
                                 HumanMessage(
-                                    content=(
-                                        "Validation phase cannot complete until validation contracts are satisfied.\n"
-                                        "Fix now with Google Sheets named-range tools:\n"
-                                        "1. Repair comps_table_full with >=3 valuation multiples and IB-grade notes.\n"
-                                        "2. Ensure first data row ticker equals inp_ticker and control ranges are set.\n"
-                                        "3. Populate all required Story fields and scenario linkage rows.\n"
-                                        f"Current validation issues: {issue_preview}"
-                                    )
+                                    content=continuation_message
                                 )
                             )
-                            final_response = (
-                                "Validation continuation required: contract incomplete."
-                            )
+                            final_response = "Phase continuation required: contract incomplete."
                             continue
                     break
 
@@ -1016,6 +1427,20 @@ class LangGraphFinanceAgent:
                         tool_name=tool_name,
                         args=args,
                         expected_spreadsheet_id=expected_spreadsheet_id,
+                    )
+                    (
+                        args,
+                        phase_scope_note,
+                        phase_scope_error,
+                    ) = _enforce_phase_sheet_write_allowlist(
+                        tool_name=tool_name,
+                        args=args,
+                        phase_name=phase_name,
+                        allowed_named_ranges=allowed_named_range_writes,
+                        allowed_named_tables=allowed_named_table_writes,
+                    )
+                    scope_note = "; ".join(
+                        part for part in (scope_note, phase_scope_note) if part
                     )
 
                     tool = self._tool_map.get(tool_name)
@@ -1030,6 +1455,20 @@ class LangGraphFinanceAgent:
                         call_status = "error"
                         citation_count = 0
                         citation_sources: list[str] = []
+                    elif phase_scope_error:
+                        tool_result_text = json.dumps(
+                            {
+                                "error": phase_scope_error,
+                                "tool": tool_name,
+                            }
+                        )
+                        artifact_result = {
+                            "error": phase_scope_error,
+                            "tool": tool_name,
+                        }
+                        call_status = "rejected"
+                        citation_count = 0
+                        citation_sources = []
                     else:
                         try:
                             raw = tool.invoke(args)
@@ -1092,24 +1531,26 @@ class LangGraphFinanceAgent:
                 f"Unexpected LLM phase failure in '{phase_name}': {exc}"
             ) from exc
 
-    def _validation_exit_contract_issues(
+    def _phase_exit_contract_issues(
         self,
         *,
         phase_name: str,
         spreadsheet_id: str,
     ) -> list[str]:
-        if phase_name != WorkflowPhase.VALIDATION.value:
+        if phase_name not in (WorkflowPhase.VALIDATION.value, WorkflowPhase.MEMO.value):
             return []
         normalized_id = str(spreadsheet_id or "").strip()
         if not normalized_id:
-            return ["Missing spreadsheet_id for validation contract checks."]
+            return [f"Missing spreadsheet_id for {phase_name} contract checks."]
         try:
-            issues: list[str] = []
-            issues.extend(self._validate_comps_contract(normalized_id))
-            issues.extend(self._validate_story_contract(normalized_id))
-            return issues
+            if phase_name == WorkflowPhase.VALIDATION.value:
+                issues: list[str] = []
+                issues.extend(self._validate_sensitivity_contract(normalized_id))
+                issues.extend(self._validate_comps_contract(normalized_id))
+                return issues
+            return self._validate_story_contract(normalized_id)
         except Exception as exc:
-            return [f"Validation contract checks failed: {exc}"]
+            return [f"{phase_name} contract checks failed: {exc}"]
 
     def _invoke_with_timeout(
         self,
@@ -1141,6 +1582,8 @@ class LangGraphFinanceAgent:
         expected_spreadsheet_id: str,
         run_id: str,
         phase_name: str,
+        allowed_named_range_writes: tuple[str, ...] = (),
+        allowed_named_table_writes: tuple[str, ...] = (),
     ) -> tuple[str, list[dict[str, Any]]]:
         """Fallback planner-executor when Gemini function-calling is unavailable."""
         self._logger.warning(
@@ -1208,6 +1651,20 @@ class LangGraphFinanceAgent:
                 args=args,
                 expected_spreadsheet_id=expected_spreadsheet_id,
             )
+            (
+                args,
+                phase_scope_note,
+                phase_scope_error,
+            ) = _enforce_phase_sheet_write_allowlist(
+                tool_name=tool_name,
+                args=args,
+                phase_name=phase_name,
+                allowed_named_ranges=allowed_named_range_writes,
+                allowed_named_tables=allowed_named_table_writes,
+            )
+            scope_note = "; ".join(
+                part for part in (scope_note, phase_scope_note) if part
+            )
 
             if tool_name not in tool_names:
                 self._persist_tool_call_artifact(
@@ -1227,6 +1684,28 @@ class LangGraphFinanceAgent:
                         "citation_count": 0,
                         "citation_sources": [],
                         "error": "Tool not allowed in this phase.",
+                    }
+                )
+                continue
+            if phase_scope_error:
+                self._persist_tool_call_artifact(
+                    run_id=run_id,
+                    phase=phase_name,
+                    tool_name=tool_name or "__unknown__",
+                    args=args,
+                    result={"error": phase_scope_error},
+                    status="rejected",
+                    mode="planner_executor",
+                    guardrail=scope_note,
+                )
+                tool_events.append(
+                    {
+                        "tool": tool_name,
+                        "args": args,
+                        "citation_count": 0,
+                        "citation_sources": [],
+                        "error": phase_scope_error,
+                        "guardrail": scope_note,
                     }
                 )
                 continue
@@ -1318,6 +1797,25 @@ class LangGraphFinanceAgent:
         for tool_name in self._PHASE_EXTRA_TOOLS.get(phase.value, ()):
             selected.add(tool_name)
 
+        allowed_ranges = self._phase_allowed_named_ranges(
+            phase=phase,
+            skill_specs=skill_specs,
+        )
+        if not allowed_ranges:
+            selected.discard("sheets_write_named_ranges")
+
+        allowed_tables = self._phase_allowed_named_tables(
+            phase=phase,
+            skill_specs=skill_specs,
+        )
+        if not allowed_tables:
+            selected.discard("sheets_write_named_table")
+            selected.discard("sheets_append_named_table_rows")
+
+        if phase == WorkflowPhase.MODEL_RUN:
+            # Model-run must read formula outputs from the fixed output contract only.
+            selected.discard("sheets_read_named_ranges")
+
         ordered = []
         for tool_name in self.tool_registry.names():
             if tool_name in selected:
@@ -1360,7 +1858,10 @@ class LangGraphFinanceAgent:
         )
         allowed_named_ranges_line = ""
         if "sheets_write_named_ranges" in tool_names:
-            allowed_named_ranges = self._phase_allowed_named_ranges(skill_specs)
+            allowed_named_ranges = self._phase_allowed_named_ranges(
+                phase=phase,
+                skill_specs=skill_specs,
+            )
             if allowed_named_ranges:
                 allowed_named_ranges_line = (
                     "7. Use sheets_write_named_ranges only with approved template names for this phase: "
@@ -1371,7 +1872,10 @@ class LangGraphFinanceAgent:
             "sheets_write_named_table" in tool_names
             or "sheets_append_named_table_rows" in tool_names
         ):
-            allowed_tables = self._phase_allowed_named_tables(skill_specs)
+            allowed_tables = self._phase_allowed_named_tables(
+                phase=phase,
+                skill_specs=skill_specs,
+            )
             if allowed_tables:
                 allowed_named_tables_line = (
                     "8. Use named-table tools only with approved table names for this phase: "
@@ -1383,13 +1887,18 @@ class LangGraphFinanceAgent:
             phase_completion_line = (
                 "9. Memo phase is incomplete until Story linkage rows are written for all scenarios: "
                 "story_core_narrative_rows, story_linked_operating_driver_rows, "
-                "story_kpi_to_track_rows, story_memo_hooks, story_grid_citations.\n"
+                "story_kpi_to_track_rows, story_memo_hooks, story_grid_citations, and "
+                "disconfirming evidence in story_grid_rows column 5 while preserving "
+                "scenario labels in column 1.\n"
+                "10. story_memo_hooks must use 5-column rows: "
+                "[claim_title, linked_ranges_csv, memo_detail_with_resolved_values, confidence(H/M/L), citation_token]. "
+                "Do not place raw range IDs in claim_title or memo_detail; keep range IDs in linked_ranges_csv only.\n"
             )
         if phase == WorkflowPhase.VALIDATION:
             phase_completion_line = (
                 "9. Validation phase is incomplete until comps contract is satisfied: "
-                "write comps_table_full (header + rows), comps_peer_count, "
-                "comps_multiple_count, and comps_method_note.\n"
+                "write comps_method_note and execute sheets_write_named_table(table_name='comps_table_full', rows=[header+data]). "
+                "comps_peer_count/comps_multiple_count are derived from comps_table_full.\n"
             )
 
         return (
@@ -1418,28 +1927,25 @@ class LangGraphFinanceAgent:
 
     def _phase_allowed_named_ranges(
         self,
+        *,
+        phase: WorkflowPhase,
         skill_specs: tuple[SkillSpec, ...],
     ) -> tuple[str, ...]:
-        names: set[str] = {
-            "inp_ticker",
-            "inp_name",
-            "log_run_id",
-            "log_status",
-            "log_start_ts",
-            "log_end_ts",
-            "log_actions_firstrow",
-            "log_assumptions_firstrow",
-            "log_story_firstrow",
-        }
+        names: set[str] = set(_BASELINE_PHASE_WRITABLE_RANGES)
         for spec in skill_specs:
+            if spec.phase != phase.value:
+                continue
             for range_name in spec.named_ranges:
                 if _is_formula_owned_name(range_name):
                     continue
                 names.add(range_name)
+        names.difference_update(_ORCHESTRATOR_MANAGED_CORE_INPUT_RANGES)
         return tuple(sorted(names))
 
     def _phase_allowed_named_tables(
         self,
+        *,
+        phase: WorkflowPhase,
         skill_specs: tuple[SkillSpec, ...],
     ) -> tuple[str, ...]:
         known_tables = {
@@ -1449,8 +1955,10 @@ class LangGraphFinanceAgent:
             "log_assumptions_table",
             "log_story_table",
         }
-        names: set[str] = set()
+        names: set[str] = set(_BASELINE_PHASE_WRITABLE_TABLES)
         for spec in skill_specs:
+            if spec.phase != phase.value:
+                continue
             for range_name in spec.named_ranges:
                 if range_name in known_tables:
                     names.add(range_name)
@@ -1506,11 +2014,11 @@ class LangGraphFinanceAgent:
             if _to_float(value) is None:
                 issues.append(f"Non-numeric required output: {key}={value!r}")
 
-        wacc = _to_float(outputs.get("out_wacc"))
+        wacc = _to_float(outputs.get("OUT_WACC"))
         terminal_g = _to_float(outputs.get("out_terminal_g"))
         if wacc is not None and terminal_g is not None and not (wacc > terminal_g):
             issues.append(
-                f"Invariant failed: out_wacc ({wacc}) must be greater than out_terminal_g ({terminal_g})."
+                f"Invariant failed: OUT_WACC ({wacc}) must be greater than out_terminal_g ({terminal_g})."
             )
         return issues
 
@@ -1741,7 +2249,7 @@ class LangGraphFinanceAgent:
                     "="
                     "IFERROR("
                     "sens_base_value_ps"
-                    "*((out_wacc-out_terminal_g)/(INDEX(sens_wacc_vector,"
+                    "*((OUT_WACC-out_terminal_g)/(INDEX(sens_wacc_vector,"
                     f"{row_idx}"
                     ",1)-INDEX(sens_terminal_g_vector,1,"
                     f"{col_idx}"
@@ -1784,64 +2292,273 @@ class LangGraphFinanceAgent:
                 )
         return issues
 
-    def _validate_data_quality_inputs(self, spreadsheet_id: str) -> list[str]:
+    def _validate_data_quality_inputs(
+        self,
+        spreadsheet_id: str,
+        *,
+        expected_core_inputs: dict[str, Any] | None = None,
+    ) -> list[str]:
         issues: list[str] = []
+        expected = _normalize_core_input_payload(expected_core_inputs)
         ranges = self.sheets_engine.read_named_ranges(
             spreadsheet_id,
-            [
-                "inp_rev_ttm",
-                "inp_ebit_ttm",
-                "inp_tax_ttm",
-                "inp_px",
-                "inp_rf",
-                "inp_erp",
-                "inp_beta",
-                "inp_basic_shares",
-            ],
+            list(_ORCHESTRATOR_MANAGED_CORE_INPUT_RANGES),
             value_render_option="UNFORMATTED_VALUE",
         )
-        required_numeric = (
-            "inp_rev_ttm",
-            "inp_ebit_ttm",
-            "inp_tax_ttm",
-            "inp_px",
-            "inp_rf",
-            "inp_erp",
-            "inp_beta",
-            "inp_basic_shares",
-        )
-        for name in required_numeric:
-            raw = _first_sheet_cell(ranges.get(name, []))
-            value = _to_float_cell(raw)
-            if value is None:
-                issues.append(f"Data quality check failed: missing/invalid numeric input {name}.")
+        observed: dict[str, float | None] = {}
+        for name in _ORCHESTRATOR_MANAGED_CORE_INPUT_RANGES:
+            raw_value = _first_sheet_cell(ranges.get(name, []))
+            normalized = _normalize_core_input_value(
+                name,
+                raw_value,
+                from_expected=False,
+            )
+            observed[name] = normalized
+            if normalized is None:
+                issues.append(
+                    f"Data quality check failed: missing/invalid numeric input {name}."
+                )
+                continue
+            bound_issue = _core_input_bounds_issue(name, normalized)
+            if bound_issue:
+                issues.append(bound_issue)
 
-        revenue = _to_float_cell(_first_sheet_cell(ranges.get("inp_rev_ttm", [])))
-        ebit = _to_float_cell(_first_sheet_cell(ranges.get("inp_ebit_ttm", [])))
-        tax = _to_float_cell(_first_sheet_cell(ranges.get("inp_tax_ttm", [])))
-        price = _to_float_cell(_first_sheet_cell(ranges.get("inp_px", [])))
-        rf = _to_float_cell(_first_sheet_cell(ranges.get("inp_rf", [])))
-        erp = _to_float_cell(_first_sheet_cell(ranges.get("inp_erp", [])))
-        beta = _to_float_cell(_first_sheet_cell(ranges.get("inp_beta", [])))
-        shares = _to_float_cell(_first_sheet_cell(ranges.get("inp_basic_shares", [])))
-
+        revenue = observed.get("inp_rev_ttm")
+        ebit = observed.get("inp_ebit_ttm")
         if revenue is not None and revenue <= 0:
             issues.append("Data quality check failed: inp_rev_ttm must be > 0.")
-        if ebit is not None and abs(ebit) > 100_000_000:
-            issues.append("Data quality check failed: inp_ebit_ttm magnitude is implausible.")
-        if tax is not None and not (-0.10 <= tax <= 0.60):
-            issues.append(f"Data quality check failed: inp_tax_ttm out of expected bounds ({tax}).")
-        if price is not None and price <= 0:
-            issues.append("Data quality check failed: inp_px must be > 0.")
-        if rf is not None and not (0.0 <= rf <= 0.15):
-            issues.append(f"Data quality check failed: inp_rf out of expected bounds ({rf}).")
-        if erp is not None and not (0.0 <= erp <= 0.20):
-            issues.append(f"Data quality check failed: inp_erp out of expected bounds ({erp}).")
-        if beta is not None and not (0.0 <= beta <= 5.0):
-            issues.append(f"Data quality check failed: inp_beta out of expected bounds ({beta}).")
-        if shares is not None and shares <= 0:
-            issues.append("Data quality check failed: inp_basic_shares must be > 0.")
+        if revenue is not None and ebit is not None and abs(ebit) > (abs(revenue) * 5.0):
+            issues.append(
+                "Data quality check failed: inp_ebit_ttm is implausible versus inp_rev_ttm "
+                f"(ebit={ebit:.4f}, revenue={revenue:.4f})."
+            )
+
+        if not expected:
+            issues.append(
+                "Data quality check failed: missing reconciled_core_inputs baseline for parity checks."
+            )
+            return issues
+
+        for name in _ORCHESTRATOR_MANAGED_CORE_INPUT_RANGES:
+            expected_value = expected.get(name)
+            observed_value = observed.get(name)
+            if expected_value is None:
+                issues.append(
+                    "Data quality check failed: missing expected baseline value "
+                    f"for {name}."
+                )
+                continue
+            if observed_value is None:
+                continue
+            if _core_input_has_material_drift(
+                range_name=name,
+                observed_value=observed_value,
+                expected_value=expected_value,
+            ):
+                issues.append(
+                    "Data quality check failed: baseline drift detected "
+                    f"for {name} (sheet={observed_value:.6f}, expected={expected_value:.6f})."
+                )
         return issues
+
+    def _repair_data_quality_inputs(
+        self,
+        *,
+        spreadsheet_id: str,
+        run_id: str,
+        phase_name: str,
+        expected_core_inputs: dict[str, Any] | None = None,
+    ) -> list[str]:
+        expected = _normalize_core_input_payload(expected_core_inputs)
+        if not expected:
+            return [
+                "Data quality check failed: missing reconciled_core_inputs baseline for deterministic repair."
+            ]
+
+        ranges = self.sheets_engine.read_named_ranges(
+            spreadsheet_id,
+            list(_ORCHESTRATOR_MANAGED_CORE_INPUT_RANGES) + ["inp_tax_norm"],
+            value_render_option="UNFORMATTED_VALUE",
+        )
+        repair_values: dict[str, float] = {}
+        unresolved_expected: list[str] = []
+
+        for range_name in _ORCHESTRATOR_MANAGED_CORE_INPUT_RANGES:
+            expected_value = expected.get(range_name)
+            if expected_value is None:
+                unresolved_expected.append(range_name)
+                continue
+            current_raw = _first_sheet_cell(ranges.get(range_name, []))
+            current_value = _normalize_core_input_value(
+                range_name,
+                current_raw,
+                from_expected=False,
+            )
+            if current_value is None:
+                repair_values[range_name] = expected_value
+                continue
+            if _core_input_bounds_issue(range_name, current_value):
+                repair_values[range_name] = expected_value
+                continue
+            if _core_input_has_material_drift(
+                range_name=range_name,
+                observed_value=current_value,
+                expected_value=expected_value,
+            ):
+                repair_values[range_name] = expected_value
+
+        if "inp_tax_ttm" in unresolved_expected:
+            fallback_tax = _normalize_core_input_value(
+                "inp_tax_ttm",
+                _first_sheet_cell(ranges.get("inp_tax_norm", [])),
+                from_expected=False,
+            )
+            if _is_valid_tax_rate(fallback_tax):
+                repair_values["inp_tax_ttm"] = fallback_tax
+                unresolved_expected = [
+                    name for name in unresolved_expected if name != "inp_tax_ttm"
+                ]
+
+        if unresolved_expected:
+            return [
+                "Data quality check failed: missing expected baseline values for "
+                + ",".join(sorted(unresolved_expected))
+                + "."
+            ]
+
+        if not repair_values:
+            return []
+
+        args = {
+            "spreadsheet_id": spreadsheet_id,
+            "values": repair_values,
+        }
+        started = perf_counter()
+        try:
+            self.sheets_engine.write_named_ranges(
+                spreadsheet_id=spreadsheet_id,
+                values=repair_values,
+            )
+            duration_ms = (perf_counter() - started) * 1000.0
+            self._persist_tool_call_artifact(
+                run_id=run_id,
+                phase=phase_name,
+                tool_name="sheets_write_named_ranges",
+                args=args,
+                result={
+                    "ok": True,
+                    "written_ranges": len(repair_values),
+                    "ranges": sorted(repair_values.keys()),
+                },
+                status="ok",
+                mode="orchestrator_guardrail",
+                duration_ms=duration_ms,
+                guardrail="data_quality_core_inputs_autorepair",
+            )
+            self._logger.warning(
+                "data_quality_core_inputs_autorepair_applied run_id=%s ranges=%s",
+                run_id,
+                ",".join(sorted(repair_values.keys())),
+            )
+            return []
+        except Exception as exc:
+            duration_ms = (perf_counter() - started) * 1000.0
+            self._persist_tool_call_artifact(
+                run_id=run_id,
+                phase=phase_name,
+                tool_name="sheets_write_named_ranges",
+                args=args,
+                result={
+                    "error": str(exc),
+                    "tool": "sheets_write_named_ranges",
+                },
+                status="error",
+                mode="orchestrator_guardrail",
+                duration_ms=duration_ms,
+                guardrail="data_quality_core_inputs_autorepair",
+            )
+            self._logger.exception(
+                "data_quality_core_inputs_autorepair_failed run_id=%s",
+                run_id,
+            )
+            return [
+                f"Data quality check failed: unable to auto-repair core inputs ({exc})."
+            ]
+
+    def _repair_sources_table_inputs(
+        self,
+        *,
+        spreadsheet_id: str,
+        run_id: str,
+        phase_name: str,
+    ) -> list[str]:
+        initial_issues = self._validate_sources_contract(spreadsheet_id)
+        if not initial_issues:
+            return []
+
+        artifact_path = self._tool_call_artifact_path(run_id)
+        citation_rows = _build_sources_rows_from_tool_artifact(
+            artifact_path=artifact_path,
+            max_rows=_AUTO_SOURCES_MAX_ROWS,
+        )
+        if len(citation_rows) < _SOURCES_MIN_ROWS:
+            return [
+                "Data quality check failed: sources_table malformed and auto-repair could "
+                "not find enough citation rows in tool-call artifacts."
+            ]
+
+        started = perf_counter()
+        args = {
+            "spreadsheet_id": spreadsheet_id,
+            "table_name": "sources_table",
+            "rows": f"rows={len(citation_rows)}",
+        }
+        try:
+            self.sheets_engine.write_named_table(
+                spreadsheet_id=spreadsheet_id,
+                table_name="sources_table",
+                rows=citation_rows,
+            )
+            duration_ms = (perf_counter() - started) * 1000.0
+            self._persist_tool_call_artifact(
+                run_id=run_id,
+                phase=phase_name,
+                tool_name="sheets_write_named_table",
+                args=args,
+                result={
+                    "ok": True,
+                    "table_name": "sources_table",
+                    "rows_written": len(citation_rows),
+                },
+                status="ok",
+                mode="orchestrator_guardrail",
+                duration_ms=duration_ms,
+                guardrail="data_quality_sources_autorepair",
+            )
+        except Exception as exc:
+            duration_ms = (perf_counter() - started) * 1000.0
+            self._persist_tool_call_artifact(
+                run_id=run_id,
+                phase=phase_name,
+                tool_name="sheets_write_named_table",
+                args=args,
+                result={"error": str(exc), "table_name": "sources_table"},
+                status="error",
+                mode="orchestrator_guardrail",
+                duration_ms=duration_ms,
+                guardrail="data_quality_sources_autorepair",
+            )
+            return [
+                f"Data quality check failed: unable to auto-repair sources_table ({exc})."
+            ]
+
+        post_issues = self._validate_sources_contract(spreadsheet_id)
+        if post_issues:
+            return [
+                "Data quality check failed: sources_table auto-repair did not satisfy schema "
+                f"(issues={'; '.join(post_issues[:3])})."
+            ]
+        return []
 
     def _validate_comps_contract(self, spreadsheet_id: str) -> list[str]:
         issues: list[str] = []
@@ -2082,6 +2799,20 @@ class LangGraphFinanceAgent:
                     f"(chars={len(text)}, required>={_STORY_MIN_TEXT_CHARS})."
                 )
 
+        grid_header = blocks.get("story_grid_header", [])
+        if not grid_header or not isinstance(grid_header[0], list):
+            issues.append("Story contract failed: story_grid_header is missing.")
+        else:
+            header_cells = [
+                str(cell or "").strip().casefold()
+                for cell in grid_header[0][: len(_STORY_EXPECTED_GRID_HEADER)]
+            ]
+            if tuple(header_cells) != _STORY_EXPECTED_GRID_HEADER:
+                issues.append(
+                    "Story contract failed: story_grid_header mismatch "
+                    f"(expected={list(_STORY_EXPECTED_GRID_HEADER)}, found={header_cells})."
+                )
+
         grid_rows = blocks.get("story_grid_rows", [])
         if len(grid_rows) < len(_STORY_REQUIRED_SCENARIOS):
             issues.append(
@@ -2099,6 +2830,13 @@ class LangGraphFinanceAgent:
                 issues.append(
                     "Story contract failed: scenario row label mismatch "
                     f"(row={row_idx + 1}, expected~={scenario}, found={label!r})."
+                )
+            disconfirming = str(_cell_at(grid_rows, row_idx, 4) or "").strip()
+            if len(disconfirming) < _STORY_MIN_DISCONFIRMING_EVIDENCE_CHARS:
+                issues.append(
+                    "Story contract failed: disconfirming evidence is under-filled "
+                    f"(scenario={scenario}, chars={len(disconfirming)}, "
+                    f"required>={_STORY_MIN_DISCONFIRMING_EVIDENCE_CHARS})."
                 )
 
         grid_column_rules = (
@@ -2122,26 +2860,60 @@ class LangGraphFinanceAgent:
                         f"({range_name}, scenario={scenario}, chars={len(text)}, required>={min_chars})."
                     )
 
-        memo_hook_entries = [
-            str(cell).strip()
-            for cell in _flatten_cells(blocks.get("story_memo_hooks", []))
-            if str(cell or "").strip()
+        memo_hook_rows = [
+            row for row in blocks.get("story_memo_hooks", []) if _row_has_values(row)
         ]
-        if len(memo_hook_entries) < _STORY_MIN_MEMO_HOOKS:
+        if len(memo_hook_rows) < _STORY_MIN_MEMO_HOOKS:
             issues.append(
                 "Story contract failed: story_memo_hooks is under-filled "
-                f"(entries={len(memo_hook_entries)}, required>={_STORY_MIN_MEMO_HOOKS})."
+                f"(rows={len(memo_hook_rows)}, required>={_STORY_MIN_MEMO_HOOKS})."
             )
-        unlinked_hook_entries = [
-            entry
-            for entry in memo_hook_entries
-            if not _STORY_MEMO_HOOK_RANGE_TOKEN_RE.search(entry)
-        ]
-        if unlinked_hook_entries:
-            issues.append(
-                "Story contract failed: story_memo_hooks entries must reference sheet range tokens "
-                "(expected inp_/out_/sens_/comps_ tokens)."
-            )
+        for row_idx, row in enumerate(memo_hook_rows[: _STORY_MIN_MEMO_HOOKS], start=1):
+            claim_title = str(_cell_at([row], 0, 0) or "").strip()
+            linkage_csv = str(_cell_at([row], 0, 1) or "").strip()
+            memo_detail = str(_cell_at([row], 0, 2) or "").strip()
+            confidence = str(_cell_at([row], 0, 3) or "").strip()
+            citation = str(_cell_at([row], 0, 4) or "").strip()
+
+            if len(claim_title) < _STORY_MEMO_HOOK_MIN_CLAIM_CHARS:
+                issues.append(
+                    "Story contract failed: story_memo_hooks claim_title under-filled "
+                    f"(row={row_idx}, chars={len(claim_title)}, required>={_STORY_MEMO_HOOK_MIN_CLAIM_CHARS})."
+                )
+            if len(memo_detail) < _STORY_MEMO_HOOK_MIN_DETAIL_CHARS:
+                issues.append(
+                    "Story contract failed: story_memo_hooks memo_detail under-filled "
+                    f"(row={row_idx}, chars={len(memo_detail)}, required>={_STORY_MEMO_HOOK_MIN_DETAIL_CHARS})."
+                )
+
+            linkage_tokens = _extract_story_linkage_tokens(linkage_csv)
+            if not linkage_tokens:
+                issues.append(
+                    "Story contract failed: story_memo_hooks linkage column must include "
+                    "comma-separated sheet range tokens (row="
+                    f"{row_idx})."
+                )
+
+            if _STORY_MEMO_HOOK_RANGE_TOKEN_RE.search(claim_title) or _STORY_MEMO_HOOK_RANGE_TOKEN_RE.search(memo_detail):
+                issues.append(
+                    "Story contract failed: story_memo_hooks prose must use resolved values; "
+                    "keep range IDs in linkage column only."
+                )
+
+            if confidence and confidence.casefold() not in _STORY_MEMO_HOOK_CONFIDENCE_LEVELS:
+                issues.append(
+                    "Story contract failed: story_memo_hooks confidence must be one of "
+                    f"{sorted(_STORY_MEMO_HOOK_CONFIDENCE_LEVELS)} (row={row_idx}, value={confidence!r})."
+                )
+            if citation:
+                citation_tokens = _split_citation_tokens(citation)
+                if not citation_tokens or not all(
+                    _is_valid_story_citation_token(token) for token in citation_tokens
+                ):
+                    issues.append(
+                        "Story contract failed: story_memo_hooks citation token is invalid "
+                        f"(row={row_idx})."
+                    )
 
         citation_entries = [
             str(cell).strip()
@@ -2153,16 +2925,14 @@ class LangGraphFinanceAgent:
                 "Story contract failed: story_grid_citations is under-filled "
                 f"(entries={len(citation_entries)})."
             )
-        invalid_citations = [
-            item
-            for item in citation_entries
-            if not (
-                "http://" in item
-                or "https://" in item
-                or "source:" in item.casefold()
-                or _looks_like_citation_id(item)
-            )
-        ]
+        invalid_citations = []
+        for item in citation_entries:
+            tokens = _split_citation_tokens(item)
+            if not tokens:
+                invalid_citations.append(item)
+                continue
+            if not all(_is_valid_story_citation_token(token) for token in tokens):
+                invalid_citations.append(item)
         if invalid_citations:
             issues.append(
                 "Story contract failed: citation entries must include URLs, source tags, or citation IDs."
@@ -2190,8 +2960,18 @@ class LangGraphFinanceAgent:
             for cell in _flatten_cells(blocks.get("story_grid_citations", []))
             if str(cell or "").strip()
         ]
+        story_entries_valid = True
+        for entry in story_entries:
+            tokens = _split_citation_tokens(entry)
+            if not tokens or not all(_is_valid_story_citation_token(token) for token in tokens):
+                story_entries_valid = False
+                break
 
-        if len(sources_rows) >= _SOURCES_MIN_ROWS and len(story_entries) >= _STORY_MIN_CITATION_ROWS:
+        if (
+            len(sources_rows) >= _SOURCES_MIN_ROWS
+            and len(story_entries) >= _STORY_MIN_CITATION_ROWS
+            and story_entries_valid
+        ):
             return issues
 
         artifact_file = Path(artifact_path.strip()) if artifact_path.strip() else self._tool_call_artifact_path(run_id)
@@ -2230,7 +3010,13 @@ class LangGraphFinanceAgent:
             for cell in _flatten_cells(refreshed.get("story_grid_citations", []))
             if str(cell or "").strip()
         ]
-        if len(story_entries) >= _STORY_MIN_CITATION_ROWS:
+        refreshed_entries_valid = True
+        for entry in story_entries:
+            tokens = _split_citation_tokens(entry)
+            if not tokens or not all(_is_valid_story_citation_token(token) for token in tokens):
+                refreshed_entries_valid = False
+                break
+        if len(story_entries) >= _STORY_MIN_CITATION_ROWS and refreshed_entries_valid:
             return issues
 
         refreshed_sources_rows = [
@@ -2264,6 +3050,118 @@ class LangGraphFinanceAgent:
             status="ok",
             mode="orchestrator_guardrail",
         )
+        return issues
+
+    def _enforce_story_hook_value_writeback(
+        self,
+        *,
+        spreadsheet_id: str,
+        run_id: str,
+    ) -> list[str]:
+        issues: list[str] = []
+        try:
+            default_linkage_sets: tuple[tuple[str, ...], ...] = (
+                ("out_value_ps_weighted", "inp_px"),
+                ("out_value_ps_base", "inp_base_m5", "inp_base_wacc"),
+                ("out_value_ps_pess", "inp_pess_g1", "inp_pess_m5"),
+            )
+            hook_blocks = self.sheets_engine.read_named_ranges(
+                spreadsheet_id,
+                ["story_memo_hooks", "story_grid_citations", "sources_table"],
+                value_render_option="FORMATTED_VALUE",
+            )
+            hook_rows = [
+                row for row in hook_blocks.get("story_memo_hooks", []) if isinstance(row, list)
+            ]
+
+            source_rows = [
+                row
+                for row in hook_blocks.get("sources_table", [])
+                if isinstance(row, list) and _row_has_values(row)
+            ]
+            source_tokens = _collect_story_citation_tokens(source_rows)
+            story_citation_cells = [
+                str(cell).strip()
+                for cell in _flatten_cells(hook_blocks.get("story_grid_citations", []))
+                if str(cell or "").strip()
+            ]
+            story_citation_tokens: list[str] = []
+            for value in story_citation_cells:
+                for token in _split_citation_tokens(value):
+                    if _is_valid_story_citation_token(token):
+                        story_citation_tokens.append(token)
+            citation_fallbacks = story_citation_tokens + source_tokens
+
+            valid_names = set(self.sheets_engine.inspect_workbook(spreadsheet_id).named_ranges)
+            read_names: list[str] = []
+            seen_names: set[str] = set()
+            for row in hook_rows:
+                for cell in row:
+                    for token in _extract_story_range_tokens_from_text(str(cell or "")):
+                        if token in valid_names and token not in seen_names:
+                            seen_names.add(token)
+                            read_names.append(token)
+            for linkage_tokens in default_linkage_sets:
+                for token in linkage_tokens:
+                    if token in valid_names and token not in seen_names:
+                        seen_names.add(token)
+                        read_names.append(token)
+
+            value_lookup: dict[str, str] = {}
+            if read_names:
+                value_blocks = self.sheets_engine.read_named_ranges(
+                    spreadsheet_id,
+                    read_names,
+                    value_render_option="FORMATTED_VALUE",
+                )
+                for name in read_names:
+                    value_lookup[name] = _format_story_hook_token_value(
+                        name=name,
+                        raw=_first_sheet_cell(value_blocks.get(name, [])),
+                    )
+
+            normalized_rows: list[list[str]] = []
+            for row_idx in range(_STORY_MIN_MEMO_HOOKS):
+                existing = hook_rows[row_idx] if row_idx < len(hook_rows) else []
+                default_tokens = tuple(
+                    token for token in default_linkage_sets[row_idx] if token in valid_names
+                )
+                normalized_rows.append(
+                    _normalize_story_memo_hook_row(
+                        row=existing,
+                        row_index=row_idx,
+                        default_tokens=default_tokens,
+                        value_lookup=value_lookup,
+                        citation_fallbacks=citation_fallbacks,
+                    )
+                )
+
+            existing_trimmed = [
+                [_normalize_table_cell_for_compare(cell) for cell in row[:5]]
+                + [""] * max(0, 5 - len(row[:5]))
+                for row in hook_rows[: _STORY_MIN_MEMO_HOOKS]
+            ]
+            if existing_trimmed != normalized_rows:
+                self.sheets_engine.write_named_ranges(
+                    spreadsheet_id,
+                    {"story_memo_hooks": normalized_rows},
+                )
+                self._persist_tool_call_artifact(
+                    run_id=run_id,
+                    phase="finalize",
+                    tool_name="orchestrator_guardrail",
+                    args={"action": "story_memo_hooks_normalize"},
+                    result={"ok": True, "rows_written": len(normalized_rows)},
+                    status="ok",
+                    mode="orchestrator_guardrail",
+                )
+        except Exception as exc:
+            issues.append(f"Story memo-hook normalization failed: {exc}")
+            self._logger.exception(
+                "story_memo_hook_normalize_failed run_id=%s spreadsheet_id=%s",
+                run_id,
+                spreadsheet_id,
+            )
         return issues
 
 
@@ -2375,6 +3273,76 @@ def _enforce_sheet_tool_scope(
             f"spreadsheet_id overridden from {provided} to active run sheet.",
         )
     return normalized, "spreadsheet_id injected from active run context."
+
+
+def _enforce_phase_sheet_write_allowlist(
+    *,
+    tool_name: str,
+    args: dict[str, Any],
+    phase_name: str,
+    allowed_named_ranges: tuple[str, ...],
+    allowed_named_tables: tuple[str, ...],
+) -> tuple[dict[str, Any], str, str]:
+    if not tool_name.startswith("sheets_"):
+        return args, "", ""
+
+    normalized = dict(args)
+    notes: list[str] = []
+    allowed_ranges = {name.strip().lower() for name in allowed_named_ranges if name}
+    allowed_tables = {name.strip().lower() for name in allowed_named_tables if name}
+
+    if tool_name == "sheets_write_named_ranges":
+        values = normalized.get("values")
+        if not isinstance(values, dict):
+            return normalized, "", ""
+        range_names = [str(name).strip() for name in values.keys()]
+        disallowed = [
+            name
+            for name in range_names
+            if name.strip().lower() not in allowed_ranges
+        ]
+        if disallowed:
+            return (
+                normalized,
+                "",
+                "Named-range write blocked by phase allowlist "
+                f"(phase={phase_name}, disallowed={','.join(sorted(disallowed))}).",
+            )
+        has_story = any(name.strip().lower().startswith("story_") for name in range_names)
+        has_comps = any(name.strip().lower().startswith("comps_") for name in range_names)
+        if has_story and has_comps:
+            return (
+                normalized,
+                "",
+                "Named-range write blocked: do not mix story_* and comps_* updates in one call.",
+            )
+        if range_names:
+            notes.append(
+                "phase_named_range_allowlist_ok "
+                f"(phase={phase_name}, count={len(range_names)})"
+            )
+
+    if tool_name in {"sheets_write_named_table", "sheets_append_named_table_rows"}:
+        table_name = str(normalized.get("table_name") or "").strip().lower()
+        if not table_name:
+            return (
+                normalized,
+                "",
+                f"Named-table write blocked by phase allowlist (phase={phase_name}, table_name missing).",
+            )
+        if table_name not in allowed_tables:
+            return (
+                normalized,
+                "",
+                "Named-table write blocked by phase allowlist "
+                f"(phase={phase_name}, table={table_name}).",
+            )
+        notes.append(
+            "phase_named_table_allowlist_ok "
+            f"(phase={phase_name}, table={table_name})"
+        )
+
+    return normalized, "; ".join(notes), ""
 
 
 def _tool_result_to_text(result: Any) -> str:
@@ -2665,6 +3633,236 @@ def _to_int_cell(value: Any) -> int | None:
     return integer
 
 
+def _to_sheet_money_mm(value: Any) -> float | None:
+    numeric = _to_float(value)
+    if numeric is None:
+        return None
+    if abs(numeric) >= 1_000_000:
+        return numeric / 1_000_000
+    return numeric
+
+
+def _to_sheet_shares_mm(value: Any) -> float | None:
+    numeric = _to_float(value)
+    if numeric is None:
+        return None
+    if abs(numeric) >= 1_000_000:
+        return numeric / 1_000_000
+    return numeric
+
+
+def _normalize_rate_decimal(value: Any) -> float | None:
+    numeric = _to_float(value)
+    if numeric is None:
+        return None
+    if abs(numeric) > 1.0 and abs(numeric) <= 100.0:
+        return numeric / 100.0
+    return numeric
+
+
+def _is_valid_tax_rate(value: float | None) -> bool:
+    return value is not None and -0.10 <= value <= 0.60
+
+
+def _normalize_core_input_value(
+    range_name: str,
+    value: Any,
+    *,
+    from_expected: bool,
+) -> float | None:
+    normalized_name = range_name.strip()
+    if normalized_name in _CORE_INPUT_RATE_RANGES:
+        return _normalize_rate_decimal(_to_float_cell(value))
+    if normalized_name == "inp_beta":
+        return _to_float_cell(value)
+    if normalized_name == "inp_px":
+        return _to_float_cell(value)
+    if normalized_name in _CORE_INPUT_MONEY_MM_RANGES:
+        if from_expected:
+            return _to_sheet_money_mm(value)
+        return _to_float_cell(value)
+    if normalized_name in _CORE_INPUT_SHARES_MM_RANGES:
+        if from_expected:
+            return _to_sheet_shares_mm(value)
+        return _to_float_cell(value)
+    return _to_float_cell(value)
+
+
+def _normalize_core_input_payload(payload: Any) -> dict[str, float]:
+    if not isinstance(payload, dict):
+        return {}
+    normalized: dict[str, float] = {}
+    for range_name in _ORCHESTRATOR_MANAGED_CORE_INPUT_RANGES:
+        if range_name not in payload:
+            continue
+        value = _normalize_core_input_value(
+            range_name,
+            payload.get(range_name),
+            from_expected=True,
+        )
+        if value is None:
+            continue
+        normalized[range_name] = value
+    return normalized
+
+
+def _core_input_bounds_issue(range_name: str, value: float) -> str | None:
+    bounds = _CORE_INPUT_VALUE_BOUNDS.get(range_name)
+    if bounds is None:
+        return None
+    min_value, max_value = bounds
+    if value < min_value or value > max_value:
+        return (
+            "Data quality check failed: "
+            f"{range_name} out of expected bounds ({value:.6f}; expected {min_value}..{max_value})."
+        )
+    return None
+
+
+def _core_input_drift_tolerance(range_name: str, expected_value: float) -> float:
+    if range_name in _CORE_INPUT_RATE_RANGES:
+        return 0.0002
+    if range_name == "inp_px":
+        return max(0.05, abs(expected_value) * 0.005)
+    if range_name in _CORE_INPUT_SHARES_MM_RANGES:
+        return max(0.05, abs(expected_value) * 0.01)
+    return max(0.5, abs(expected_value) * 0.01)
+
+
+def _core_input_has_material_drift(
+    *,
+    range_name: str,
+    observed_value: float,
+    expected_value: float,
+) -> bool:
+    tolerance = _core_input_drift_tolerance(range_name, expected_value)
+    return abs(observed_value - expected_value) > tolerance
+
+
+def _reconcile_core_inputs(
+    *,
+    canonical_named_ranges: dict[str, Any],
+    sec_named_ranges: dict[str, Any],
+    core_range_names: tuple[str, ...],
+    sec_preferred_ranges: tuple[str, ...],
+) -> tuple[dict[str, float], dict[str, Any], list[str]]:
+    resolved: dict[str, float] = {}
+    rows: list[dict[str, Any]] = []
+    issues: list[str] = []
+    sec_preferred = set(sec_preferred_ranges)
+
+    for range_name in core_range_names:
+        canonical_value = _normalize_core_input_value(
+            range_name,
+            canonical_named_ranges.get(range_name),
+            from_expected=True,
+        )
+        sec_value = _normalize_core_input_value(
+            range_name,
+            sec_named_ranges.get(range_name),
+            from_expected=True,
+        )
+        selected_value: float | None = None
+        selected_source = "missing"
+        if range_name in sec_preferred and sec_value is not None:
+            selected_value = sec_value
+            selected_source = "sec_overlay"
+        elif canonical_value is not None:
+            selected_value = canonical_value
+            selected_source = "canonical_dataset"
+        elif sec_value is not None:
+            selected_value = sec_value
+            selected_source = "sec_overlay_fallback"
+
+        if selected_value is None:
+            issues.append(
+                f"missing reconciled core input {range_name} after canonical+SEC merge."
+            )
+        else:
+            bound_issue = _core_input_bounds_issue(range_name, selected_value)
+            if bound_issue:
+                issues.append(bound_issue)
+            resolved[range_name] = selected_value
+
+        rel_diff: float | None = None
+        if canonical_value is not None and sec_value not in (None, 0.0):
+            rel_diff = abs(canonical_value - sec_value) / abs(sec_value)
+
+        rows.append(
+            {
+                "range": range_name,
+                "canonical_value": canonical_value,
+                "sec_value": sec_value,
+                "selected_value": selected_value,
+                "selected_source": selected_source,
+                "rel_diff": rel_diff,
+            }
+        )
+
+    report = {
+        "rows": rows,
+        "missing_ranges": [name for name in core_range_names if name not in resolved],
+        "resolved_count": len(resolved),
+        "required_count": len(core_range_names),
+        "is_complete": len(resolved) == len(core_range_names),
+    }
+    return resolved, report, issues
+
+
+def _sec_filing_named_ranges_from_payload(fundamentals: dict[str, Any]) -> dict[str, Any]:
+    overlay: dict[str, Any] = {}
+    for sec_key, range_name in _SEC_FILING_TO_INPUT_RANGE_MAP.items():
+        raw_value = fundamentals.get(sec_key)
+        if raw_value in (None, ""):
+            continue
+        if range_name == "inp_tax_ttm":
+            normalized = _normalize_rate_decimal(raw_value)
+        elif range_name == "inp_basic_shares":
+            normalized = _to_sheet_shares_mm(raw_value)
+        else:
+            normalized = _to_sheet_money_mm(raw_value)
+        if normalized in (None, ""):
+            continue
+        overlay[range_name] = normalized
+    return overlay
+
+
+def _build_named_range_reconciliation(
+    *,
+    baseline_named_ranges: dict[str, Any],
+    sec_named_ranges: dict[str, Any],
+    range_names: tuple[str, ...],
+    rel_diff_threshold: float,
+) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    high_diff_ranges: list[str] = []
+    for range_name in range_names:
+        baseline_raw = baseline_named_ranges.get(range_name)
+        sec_raw = sec_named_ranges.get(range_name)
+        baseline_value = _to_float_cell(baseline_raw)
+        sec_value = _to_float_cell(sec_raw)
+        rel_diff: float | None = None
+        if (
+            baseline_value is not None
+            and sec_value not in (None, 0.0)
+        ):
+            rel_diff = abs(baseline_value - sec_value) / abs(sec_value)
+            if rel_diff > rel_diff_threshold:
+                high_diff_ranges.append(range_name)
+        rows.append(
+            {
+                "range": range_name,
+                "baseline": baseline_value,
+                "sec": sec_value,
+                "rel_diff": rel_diff,
+            }
+        )
+    return {
+        "rows": rows,
+        "high_diff_ranges": sorted(set(high_diff_ranges)),
+    }
+
+
 def _cell_at(rows: list[list[Any]], row_idx: int, col_idx: int) -> Any:
     if row_idx < 0 or col_idx < 0:
         return ""
@@ -2703,6 +3901,198 @@ def _flatten_cells(rows: list[list[Any]]) -> list[Any]:
 def _flatten_text(rows: list[list[Any]]) -> str:
     chunks = [str(cell).strip() for cell in _flatten_cells(rows) if str(cell or "").strip()]
     return " ".join(chunks)
+
+
+def _normalize_table_cell_for_compare(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _extract_story_range_tokens_from_text(text: str) -> list[str]:
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for match in _STORY_MEMO_HOOK_RANGE_TOKEN_RE.finditer(str(text or "")):
+        token = str(match.group(0) or "").strip()
+        if not token:
+            continue
+        if token in seen:
+            continue
+        seen.add(token)
+        tokens.append(token)
+    return tokens
+
+
+def _extract_story_linkage_tokens(value: str) -> list[str]:
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for chunk in re.split(r"[,\n;|]+", str(value or "")):
+        token = chunk.strip()
+        if not token:
+            continue
+        if not _STORY_MEMO_HOOK_RANGE_TOKEN_FULL_RE.fullmatch(token):
+            continue
+        if token in seen:
+            continue
+        seen.add(token)
+        tokens.append(token)
+    return tokens
+
+
+def _replace_story_tokens_with_values(
+    *,
+    text: str,
+    value_lookup: dict[str, str],
+) -> str:
+    def _replacement(match: re.Match[str]) -> str:
+        token = str(match.group(0) or "").strip()
+        value = value_lookup.get(token, "").strip()
+        if value:
+            return value
+        return "N/A"
+
+    return _STORY_MEMO_HOOK_RANGE_TOKEN_RE.sub(_replacement, str(text or "")).strip()
+
+
+def _normalize_story_hook_confidence(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "Medium"
+    normalized = text.casefold()
+    if normalized not in _STORY_MEMO_HOOK_CONFIDENCE_LEVELS:
+        return "Medium"
+    return normalized.capitalize()
+
+
+def _choose_story_hook_citation(
+    *,
+    raw_value: str,
+    citation_fallbacks: list[str],
+    row_index: int,
+) -> str:
+    raw_tokens = [token for token in _split_citation_tokens(raw_value) if _is_valid_story_citation_token(token)]
+    if raw_tokens:
+        return ", ".join(raw_tokens)
+    if citation_fallbacks:
+        token = citation_fallbacks[min(row_index, len(citation_fallbacks) - 1)]
+        if _is_valid_story_citation_token(token):
+            return token
+    return "source:research_packet"
+
+
+def _normalize_story_memo_hook_row(
+    *,
+    row: list[Any],
+    row_index: int,
+    default_tokens: tuple[str, ...],
+    value_lookup: dict[str, str],
+    citation_fallbacks: list[str],
+) -> list[str]:
+    claim_title = str(_cell_at([row], 0, 0) or "").strip()
+    linkage_raw = str(_cell_at([row], 0, 1) or "").strip()
+    memo_detail = str(_cell_at([row], 0, 2) or "").strip()
+    confidence_raw = str(_cell_at([row], 0, 3) or "").strip()
+    citation_raw = str(_cell_at([row], 0, 4) or "").strip()
+
+    extracted_tokens = []
+    extracted_tokens.extend(_extract_story_linkage_tokens(linkage_raw))
+    extracted_tokens.extend(_extract_story_range_tokens_from_text(claim_title))
+    extracted_tokens.extend(_extract_story_range_tokens_from_text(memo_detail))
+    linkage_tokens: list[str] = []
+    seen_tokens: set[str] = set()
+    for token in extracted_tokens + list(default_tokens):
+        if token in seen_tokens:
+            continue
+        seen_tokens.add(token)
+        linkage_tokens.append(token)
+
+    claim_title = _replace_story_tokens_with_values(
+        text=claim_title,
+        value_lookup=value_lookup,
+    )
+    memo_detail = _replace_story_tokens_with_values(
+        text=memo_detail,
+        value_lookup=value_lookup,
+    )
+
+    if len(claim_title) < _STORY_MEMO_HOOK_MIN_CLAIM_CHARS:
+        default_labels = (
+            "Weighted valuation vs market",
+            "Base scenario operating bridge",
+            "Downside scenario stress anchor",
+        )
+        claim_title = default_labels[min(row_index, len(default_labels) - 1)]
+
+    if len(memo_detail) < _STORY_MEMO_HOOK_MIN_DETAIL_CHARS:
+        if linkage_tokens:
+            fragments = []
+            for token in linkage_tokens:
+                value = value_lookup.get(token, "").strip()
+                if value:
+                    fragments.append(f"{token}={value}")
+                else:
+                    fragments.append(token)
+            memo_detail = (
+                "Sheet-linked valuation bridge: "
+                + "; ".join(fragments)
+                + "."
+            )
+        else:
+            memo_detail = (
+                "Sheet-linked valuation bridge requires scenario assumptions and output linkage."
+            )
+
+    if _STORY_MEMO_HOOK_RANGE_TOKEN_RE.search(claim_title):
+        claim_title = _replace_story_tokens_with_values(
+            text=claim_title,
+            value_lookup=value_lookup,
+        )
+    if _STORY_MEMO_HOOK_RANGE_TOKEN_RE.search(memo_detail):
+        memo_detail = _replace_story_tokens_with_values(
+            text=memo_detail,
+            value_lookup=value_lookup,
+        )
+
+    if len(memo_detail) < _STORY_MEMO_HOOK_MIN_DETAIL_CHARS:
+        memo_detail = (
+            memo_detail
+            + " Monitor execution and update scenario weights when evidence shifts."
+        ).strip()
+
+    confidence = _normalize_story_hook_confidence(confidence_raw)
+    citation = _choose_story_hook_citation(
+        raw_value=citation_raw,
+        citation_fallbacks=citation_fallbacks,
+        row_index=row_index,
+    )
+
+    return [
+        claim_title,
+        ",".join(linkage_tokens),
+        memo_detail,
+        confidence,
+        citation,
+    ]
+
+
+def _format_story_hook_token_value(*, name: str, raw: Any) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    numeric = _to_float_cell(raw)
+    if numeric is None:
+        return text
+
+    normalized = name.strip().lower()
+    if normalized.endswith(
+        ("_wacc", "_gt", "_tax", "_rf", "_erp", "_kd", "_dw")
+    ) or normalized.endswith(("_g1", "_g2", "_g3", "_g4", "_g5", "_m5", "_m10")):
+        return f"{numeric * 100:.1f}%"
+    if "value_ps" in normalized or normalized in {"inp_px"}:
+        return f"${numeric:,.2f}"
+    if abs(numeric) >= 1_000:
+        return f"{numeric:,.2f}"
+    if abs(numeric) >= 1:
+        return f"{numeric:.2f}"
+    return f"{numeric:.4f}"
 
 
 def _validate_comps_note_quality(*, note: str, row_idx: int) -> list[str]:
@@ -2758,6 +4148,29 @@ def _looks_like_citation_id(value: str) -> bool:
     return bool(_CITATION_ID_RE.match(token))
 
 
+def _split_citation_tokens(value: str) -> list[str]:
+    if not value.strip():
+        return []
+    tokens: list[str] = []
+    for chunk in re.split(r"[,\n;]+", value):
+        token = chunk.strip()
+        if token:
+            tokens.append(token)
+    return tokens
+
+
+def _is_valid_story_citation_token(value: str) -> bool:
+    token = value.strip()
+    if not token:
+        return False
+    lowered = token.casefold()
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        return True
+    if lowered.startswith("source:"):
+        return True
+    return _looks_like_citation_id(token)
+
+
 def _validate_canonical_prefill_payload(
     payload: dict[str, Any],
     *,
@@ -2794,9 +4207,20 @@ def _validate_canonical_artifact_metadata(
         issues.append("missing canonical artifact_path")
     if not artifact_sha256 or len(artifact_sha256) < 32:
         issues.append("missing/invalid canonical artifact_sha256")
-    is_complete = bool(quality_report.get("is_complete")) if isinstance(quality_report, dict) else False
+    is_complete = (
+        bool(quality_report.get("is_complete"))
+        if isinstance(quality_report, dict)
+        else False
+    )
     if not is_complete:
         issues.append("canonical quality_report indicates incomplete required input coverage")
+    if isinstance(quality_report, dict):
+        if quality_report.get("is_plausible") is False:
+            issues.append(
+                "canonical quality_report indicates implausible baseline inputs"
+            )
+        if quality_report.get("is_ready") is False:
+            issues.append("canonical quality_report indicates dataset is not ready")
     return issues
 
 

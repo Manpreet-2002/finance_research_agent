@@ -42,10 +42,10 @@ description: Enforce named-range-only Google Sheets operations for valuation run
 3. Capital structure: `inp_cash`, `inp_debt`, `inp_basic_shares`, `calc_diluted_shares`, `calc_lease_debt`
 4. Scenario weights: `inp_w_pess`, `inp_w_base`, `inp_w_opt`
 5. Scenario blocks: `inp_pess_*`, `inp_base_*`, `inp_opt_*`
-6. Outputs: `out_value_ps_pess`, `out_value_ps_base`, `out_value_ps_opt`, `out_value_ps_weighted`, `out_equity_value_weighted`, `out_enterprise_value_weighted`, `out_wacc`, `out_terminal_g`
+6. Outputs: `out_value_ps_pess`, `out_value_ps_base`, `out_value_ps_opt`, `out_value_ps_weighted`, `out_equity_value_weighted`, `out_enterprise_value_weighted`, `OUT_WACC`, `out_terminal_g`
 7. Comps dynamic contract: `comps_header`, `comps_firstrow`, `comps_table`, `comps_table_full`, `comps_peer_tickers`, `comps_peer_names`, `comps_multiples_header`, `comps_multiples_values`, `comps_method_note`, `comps_peer_count`, `comps_multiple_count`
 8. Table anchors: `sources_table`, `log_actions_table`, `log_assumptions_table`, `log_story_table`
-9. Legacy comps aliases (read/backward compatibility): `comps_ev_ebit`, `comps_ev_sales`, `comps_pe`, `comps_notes`
+9. Tax input semantics: `inp_tax_ttm` is an effective tax rate (decimal), never dollar tax expense.
 
 ## Comps table layout contract (must follow)
 
@@ -57,6 +57,7 @@ description: Enforce named-range-only Google Sheets operations for valuation run
 3. First data row (`Comps!B8` anchor via named range) must be the run target ticker (`inp_ticker`).
 4. Comps values must be consecutive between `Ticker` and `Notes` columns (no interior blank columns).
 5. Do not append into comps using `sheets_append_named_table_rows`; use `sheets_write_named_table` for full overwrite.
+6. `comps_peer_count` and `comps_multiple_count` are derived from `comps_table_full`; do not write them directly.
 
 ## Story layout contract (must follow)
 
@@ -69,11 +70,26 @@ description: Enforce named-range-only Google Sheets operations for valuation run
 - `story_sanity_checks` => `Story!B20`
 2. Do not write narrative text into legacy right-side blocks (`C:G`) for these fields.
 3. `story_grid_rows`, `story_grid_header`, and `story_grid_citations` remain table-style ranges and must be populated separately.
-4. Required scenario linkage columns:
+4. `story_grid_header` is template-owned/read-only. Do not write it during runtime.
+5. Required scenario linkage columns:
 - `story_core_narrative_rows` => `Story!C24:C26`
 - `story_linked_operating_driver_rows` => `Story!D24:D26`
 - `story_kpi_to_track_rows` => `Story!E24:E26`
-5. Do not leave any scenario row blank for the three linkage columns above.
+6. Do not leave any scenario row blank for the three linkage columns above.
+7. Preserve scenario labels in `story_grid_rows` column 1 as exactly `Pessimistic`, `Neutral`, `Optimistic`.
+8. `story_memo_hooks` is a fixed 3x5 block (`Story!C28:G30`) with row schema:
+- `claim_title` (resolved values, no raw range IDs)
+- `linked_ranges_csv` (comma-separated named-range IDs)
+- `memo_detail` (resolved value narrative)
+- `confidence` (`High`/`Medium`/`Low`)
+- `citation_token`
+
+## Sensitivity layout contract (must follow)
+
+1. `sens_wacc_vector` is vertical (`5x1`).
+2. `sens_terminal_g_vector` is horizontal (`1x5`).
+3. `sens_grid_values` is `5x5`.
+4. If you provide vector payloads, orientation must match named-range geometry exactly.
 
 ## Sources schema contract (must follow)
 
@@ -95,6 +111,7 @@ Every non-empty source row must:
 2. use an absolute URL in `url` (`https://...`).
 3. provide a stable `citation_id` that can be referenced from Story/Log rows.
 4. avoid mixed schemas across rows.
+5. do not include the header row in `rows`; pass data rows only.
 
 ## Agent Log schema contract (must follow)
 
@@ -115,6 +132,7 @@ Do not append 11-column source-style rows into `log_*_table`.
 1. `sheets_write_named_ranges`
 - Keys must be existing named ranges only.
 - Never write formula-owned ranges (`out_*`, `calc_*`).
+- Never write runtime read-only ranges (`story_grid_header`, `log_status`, `log_end_ts`).
 
 2. `sheets_read_named_ranges`
 - `names` must be existing named ranges only.
@@ -138,7 +156,7 @@ Do not append 11-column source-style rows into `log_*_table`.
 
 1. `sheets_write_ranges` / `sheets_read_ranges` payloads in LLM runtime.
 2. A1 strings (`Sources!A2:F20`, `'Agent Log'!B17:J17`).
-3. Fabricated names (`Sources_A1`, `Inputs!inp_rev_hist_last`).
+3. Fabricated names that are not in template named ranges.
 4. Writes to `out_*` or `calc_*`.
 
 ## Output contract

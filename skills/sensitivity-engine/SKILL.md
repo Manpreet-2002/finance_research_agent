@@ -23,6 +23,13 @@ description: Populate and interpret valuation sensitivities and stress cases in 
 - `Checks` flags for fragility and nonlinear behavior
 - `Agent Log` interpretation notes
 
+## Required range shapes (must follow)
+
+1. `sens_wacc_vector` is a 5x1 column vector (`B7:B11`).
+2. `sens_terminal_g_vector` is a 1x5 row vector (`C6:G6`).
+3. `sens_grid_values` is a 5x5 grid (`C7:G11`).
+4. Do not transpose these ranges in tool payloads.
+
 ## Workflow
 
 1. Define stress axes (typically WACC x terminal growth, margin x growth).

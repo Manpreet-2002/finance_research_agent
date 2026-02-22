@@ -13,6 +13,7 @@ from backend.app.orchestrator.langgraph_finance_agent import (
     LangGraphFinanceAgent,
     _build_sources_rows_from_tool_artifact,
     _collect_story_citation_tokens,
+    _enforce_phase_sheet_write_allowlist,
     _enforce_sheet_tool_scope,
     _to_float_cell,
     _validate_canonical_artifact_metadata,
@@ -41,6 +42,32 @@ def test_enforce_sheet_scope_overrides_mismatched_spreadsheet_id() -> None:
     assert "overridden" in note
 
 
+def test_enforce_phase_allowlist_blocks_disallowed_named_range_write() -> None:
+    args, note, error = _enforce_phase_sheet_write_allowlist(
+        tool_name="sheets_write_named_ranges",
+        args={"values": {"story_thesis": "text"}},
+        phase_name="validation",
+        allowed_named_ranges=("comps_method_note",),
+        allowed_named_tables=("comps_table_full",),
+    )
+
+    assert args["values"]["story_thesis"] == "text"
+    assert note == ""
+    assert "disallowed=story_thesis" in error
+
+
+def test_enforce_phase_allowlist_blocks_disallowed_named_table_write() -> None:
+    _, _, error = _enforce_phase_sheet_write_allowlist(
+        tool_name="sheets_write_named_table",
+        args={"table_name": "sources_table", "rows": []},
+        phase_name="memo",
+        allowed_named_ranges=("story_thesis",),
+        allowed_named_tables=("log_story_table",),
+    )
+
+    assert "table=sources_table" in error
+
+
 def test_validate_canonical_artifact_metadata_requires_complete_payload() -> None:
     issues = _validate_canonical_artifact_metadata(
         artifact_path="",
@@ -62,6 +89,155 @@ def test_to_float_cell_parses_percent_and_commas() -> None:
 def test_to_float_cell_parses_currency_and_multiple_suffix() -> None:
     assert _to_float_cell("$42.10") == 42.10
     assert _to_float_cell("23.6x") == 23.6
+
+
+class _DataQualityRepairSheets:
+    def __init__(self, *, values: dict[str, object]) -> None:
+        self._values = dict(values)
+        self.written_values: dict[str, object] = {}
+
+    def read_named_ranges(
+        self,
+        spreadsheet_id: str,
+        names: list[str],
+        *,
+        value_render_option: str = "UNFORMATTED_VALUE",
+    ):
+        del spreadsheet_id, value_render_option
+        payload: dict[str, list[list[object]]] = {}
+        for name in names:
+            payload[name] = [[self._values.get(name, "")]]
+        return payload
+
+    def write_named_ranges(self, spreadsheet_id: str, values: dict[str, object]) -> None:
+        del spreadsheet_id
+        self.written_values = dict(values)
+        self._values.update(values)
+
+
+def _expected_core_inputs() -> dict[str, float]:
+    return {
+        "inp_rev_ttm": 648_125.0,
+        "inp_ebit_ttm": 102_550.0,
+        "inp_tax_ttm": 0.19,
+        "inp_cash": 65_000.0,
+        "inp_debt": 42_000.0,
+        "inp_basic_shares": 15_420.0,
+        "inp_px": 188.75,
+        "inp_rf": 0.042,
+        "inp_erp": 0.051,
+        "inp_beta": 1.18,
+    }
+
+
+def test_repair_data_quality_inputs_reconciles_drifted_core_values() -> None:
+    agent = object.__new__(LangGraphFinanceAgent)
+    sheets = _DataQualityRepairSheets(
+        values={
+            "inp_rev_ttm": 648_125_000_000,
+            "inp_ebit_ttm": 102_550.0,
+            "inp_tax_ttm": 15_675.1,
+            "inp_cash": 65_000.0,
+            "inp_debt": 42_000.0,
+            "inp_basic_shares": 15_420.0,
+            "inp_px": 188.75,
+            "inp_rf": 0.042,
+            "inp_erp": 0.051,
+            "inp_beta": 1.18,
+            "inp_tax_norm": 0.18,
+        }
+    )
+    agent.sheets_engine = sheets
+    agent._logger = logging.getLogger("test.orchestrator.guardrails")
+    agent._persist_tool_call_artifact = lambda **kwargs: None
+
+    issues = agent._repair_data_quality_inputs(
+        spreadsheet_id="sheet_123",
+        run_id="run_123",
+        phase_name="data_quality_checks",
+        expected_core_inputs=_expected_core_inputs(),
+    )
+
+    assert issues == []
+    assert sheets.written_values["inp_rev_ttm"] == pytest.approx(648_125.0)
+    assert sheets.written_values["inp_tax_ttm"] == pytest.approx(0.19)
+
+
+def test_repair_data_quality_inputs_requires_expected_baseline() -> None:
+    agent = object.__new__(LangGraphFinanceAgent)
+    sheets = _DataQualityRepairSheets(values={"inp_tax_norm": 0.18})
+    agent.sheets_engine = sheets
+    agent._logger = logging.getLogger("test.orchestrator.guardrails")
+    agent._persist_tool_call_artifact = lambda **kwargs: None
+
+    issues = agent._repair_data_quality_inputs(
+        spreadsheet_id="sheet_123",
+        run_id="run_123",
+        phase_name="data_quality_checks",
+        expected_core_inputs=None,
+    )
+
+    assert any("missing reconciled_core_inputs baseline" in issue for issue in issues)
+
+
+def test_repair_data_quality_inputs_falls_back_to_tax_norm_when_missing_expected_tax() -> None:
+    agent = object.__new__(LangGraphFinanceAgent)
+    sheets = _DataQualityRepairSheets(
+        values={
+            "inp_rev_ttm": 648_125.0,
+            "inp_ebit_ttm": 102_550.0,
+            "inp_tax_ttm": 15_675.1,
+            "inp_tax_norm": 0.21,
+            "inp_cash": 65_000.0,
+            "inp_debt": 42_000.0,
+            "inp_basic_shares": 15_420.0,
+            "inp_px": 188.75,
+            "inp_rf": 0.042,
+            "inp_erp": 0.051,
+            "inp_beta": 1.18,
+        }
+    )
+    agent.sheets_engine = sheets
+    agent._logger = logging.getLogger("test.orchestrator.guardrails")
+    agent._persist_tool_call_artifact = lambda **kwargs: None
+    expected = _expected_core_inputs()
+    expected.pop("inp_tax_ttm")
+
+    issues = agent._repair_data_quality_inputs(
+        spreadsheet_id="sheet_123",
+        run_id="run_123",
+        phase_name="data_quality_checks",
+        expected_core_inputs=expected,
+    )
+
+    assert issues == []
+    assert sheets.written_values["inp_tax_ttm"] == pytest.approx(0.21)
+
+
+def test_validate_data_quality_inputs_flags_baseline_drift() -> None:
+    agent = object.__new__(LangGraphFinanceAgent)
+    sheets = _DataQualityRepairSheets(
+        values={
+            "inp_rev_ttm": 500_000.0,
+            "inp_ebit_ttm": 90_000.0,
+            "inp_tax_ttm": 0.15,
+            "inp_cash": 65_000.0,
+            "inp_debt": 42_000.0,
+            "inp_basic_shares": 15_420.0,
+            "inp_px": 188.75,
+            "inp_rf": 0.042,
+            "inp_erp": 0.051,
+            "inp_beta": 1.18,
+        }
+    )
+    agent.sheets_engine = sheets
+
+    issues = agent._validate_data_quality_inputs(
+        "sheet_123",
+        expected_core_inputs=_expected_core_inputs(),
+    )
+
+    assert any("baseline drift detected for inp_rev_ttm" in issue for issue in issues)
 
 
 class _WeightsSheets:
@@ -110,7 +286,7 @@ def test_validate_outputs_requires_per_scenario_outputs() -> None:
             "out_value_ps_weighted": 100.0,
             "out_equity_value_weighted": 1000.0,
             "out_enterprise_value_weighted": 1200.0,
-            "out_wacc": 0.09,
+            "OUT_WACC": 0.09,
             "out_terminal_g": 0.03,
         }
     )
@@ -234,7 +410,32 @@ class _StoryContractSheetsMissingLinkage:
                 "Disconfirming evidence",
                 "Citation / source ID",
             ]],
-            "story_grid_rows": [["Pessimistic"], ["Neutral"], ["Optimistic"]],
+            "story_grid_rows": [
+                [
+                    "Pessimistic",
+                    "",
+                    "",
+                    "",
+                    "Disconfirming evidence: macro slowdown and weaker enterprise spending.",
+                    "SRC-001",
+                ],
+                [
+                    "Neutral",
+                    "",
+                    "",
+                    "",
+                    "Disconfirming evidence: baseline assumes stable demand and no severe shocks.",
+                    "SRC-002",
+                ],
+                [
+                    "Optimistic",
+                    "",
+                    "",
+                    "",
+                    "Disconfirming evidence: upside case breaks if AI monetization lags consensus.",
+                    "SRC-003",
+                ],
+            ],
             "story_core_narrative_rows": [[""], [""], [""]],
             "story_linked_operating_driver_rows": [[""], [""], [""]],
             "story_kpi_to_track_rows": [[""], [""], [""]],
@@ -283,7 +484,32 @@ class _StoryContractSheetsComplete:
                 "Disconfirming evidence",
                 "Citation / source ID",
             ]],
-            "story_grid_rows": [["Pessimistic"], ["Neutral"], ["Optimistic"]],
+            "story_grid_rows": [
+                [
+                    "Pessimistic",
+                    "Demand softens and ad conversion weakens in downside stress.",
+                    "Search monetization rate and CPC trend.",
+                    "Search growth and TAC ratio.",
+                    "Disconfirming evidence: demand resilient despite policy shocks.",
+                    "SRC-001",
+                ],
+                [
+                    "Neutral",
+                    "Core platform growth sustains with balanced margin trajectory.",
+                    "Cloud revenue growth and segment margin trajectory.",
+                    "Cloud margin % and backlog growth.",
+                    "Disconfirming evidence: margin compression despite stable growth.",
+                    "SRC-002",
+                ],
+                [
+                    "Optimistic",
+                    "AI attach and product mix upside drive operating leverage.",
+                    "Enterprise AI attach rate and ad yield expansion.",
+                    "AI monetization yield and capex efficiency.",
+                    "Disconfirming evidence: AI adoption fails to convert into revenue lift.",
+                    "SRC-003",
+                ],
+            ],
             "story_core_narrative_rows": [[
                 "AI ad conversion pressure with search share erosion risk but stable demand."
             ], [
@@ -306,11 +532,23 @@ class _StoryContractSheetsComplete:
                 "Gemini MAU monetization yield and capex/revenue %."
             ]],
             "story_memo_hooks": [[
-                "Base claim maps to inp_base_g1, inp_base_m5, and out_value_ps_base."
+                "Weighted valuation versus market",
+                "out_value_ps_weighted,inp_px",
+                "Weighted value of $212.40 versus market price of $190.00 supports upside under current assumptions.",
+                "High",
+                "SRC-001",
             ], [
-                "Downside case maps to inp_pess_wacc and sens_grid_values stress rows."
+                "Base scenario margin bridge",
+                "out_value_ps_base,inp_base_m5,inp_base_wacc",
+                "Base scenario value of $205.30 reflects 30.0% margin and 9.0% WACC in the operating bridge.",
+                "Medium",
+                "SRC-002",
             ], [
-                "Weighted conclusion maps to inp_w_base/inp_w_opt/inp_w_pess and out_value_ps_weighted."
+                "Downside stress anchor",
+                "out_value_ps_pess,inp_pess_g1,inp_pess_m5",
+                "Downside value of $150.10 links to lower growth and margin stress in the pessimistic case.",
+                "High",
+                "SRC-003",
             ]],
             "story_grid_citations": [["SRC-001"], ["SRC-002"], ["SRC-003"]],
         }
@@ -325,6 +563,50 @@ def test_validate_story_contract_accepts_complete_linkage_fields() -> None:
     assert issues == []
 
 
+class _StoryContractSheetsRawTokenProse(_StoryContractSheetsComplete):
+    def read_named_ranges(
+        self,
+        spreadsheet_id: str,
+        names: list[str],
+        *,
+        value_render_option: str = "UNFORMATTED_VALUE",
+    ):
+        payload = super().read_named_ranges(
+            spreadsheet_id,
+            names,
+            value_render_option=value_render_option,
+        )
+        payload["story_memo_hooks"] = [[
+            "Weighted value out_value_ps_weighted vs price inp_px.",
+            "out_value_ps_weighted,inp_px",
+            "Claim prose still contains inp_px token and should fail validation.",
+            "High",
+            "SRC-001",
+        ], [
+            "Base scenario margin bridge",
+            "out_value_ps_base,inp_base_m5,inp_base_wacc",
+            "Base scenario value of $205.30 reflects 30.0% margin and 9.0% WACC in the operating bridge.",
+            "Medium",
+            "SRC-002",
+        ], [
+            "Downside stress anchor",
+            "out_value_ps_pess,inp_pess_g1,inp_pess_m5",
+            "Downside value of $150.10 links to lower growth and margin stress in the pessimistic case.",
+            "High",
+            "SRC-003",
+        ]]
+        return payload
+
+
+def test_validate_story_contract_rejects_raw_range_tokens_in_prose() -> None:
+    agent = object.__new__(LangGraphFinanceAgent)
+    agent.sheets_engine = _StoryContractSheetsRawTokenProse()
+
+    issues = agent._validate_story_contract("sheet_123")
+
+    assert any("prose must use resolved values" in issue for issue in issues)
+
+
 def test_collect_validation_gate_issues_aggregates_contracts() -> None:
     agent = object.__new__(LangGraphFinanceAgent)
     agent._enforce_sensitivity_writeback = (  # type: ignore[method-assign]
@@ -334,9 +616,6 @@ def test_collect_validation_gate_issues_aggregates_contracts() -> None:
     )
     agent._validate_comps_contract = (  # type: ignore[method-assign]
         lambda spreadsheet_id: [f"comps:{spreadsheet_id}"]
-    )
-    agent._validate_story_contract = (  # type: ignore[method-assign]
-        lambda spreadsheet_id: [f"story:{spreadsheet_id}"]
     )
 
     issues = agent._collect_validation_gate_issues(
@@ -348,7 +627,6 @@ def test_collect_validation_gate_issues_aggregates_contracts() -> None:
     assert issues == [
         "sensitivity:sheet_123:run_123:validation",
         "comps:sheet_123",
-        "story:sheet_123",
     ]
 
 
@@ -523,8 +801,21 @@ class _CompsContractSheetsValid:
                         "higher-growth cloud exposure."
                     ),
                 ],
+                [
+                    "META",
+                    "8.0",
+                    "21.9",
+                    "27.4",
+                    (
+                        "Business model: digital advertising platform with scaled social graph "
+                        "assets and growing AI-enabled engagement surfaces. Execution: strong "
+                        "cost discipline and improving ad relevance conversion in core products. "
+                        "Valuation multiple rationale: premium to cyclical ad names but discount "
+                        "to top software comps due to regulatory and platform concentration risk."
+                    ),
+                ],
             ],
-            "comps_peer_count": [[4]],
+            "comps_peer_count": [[5]],
             "comps_multiple_count": [[3]],
             "comps_method_note": [[
                 "Peer set selected for comparable scale, recurring revenue quality, and margin "
@@ -655,7 +946,7 @@ def test_run_phase_llm_turns_retries_validation_when_contract_incomplete() -> No
         return []
 
     agent._validate_comps_contract = _mock_validate_comps  # type: ignore[method-assign]
-    agent._validate_story_contract = lambda spreadsheet_id: []  # type: ignore[method-assign]
+    agent._validate_sensitivity_contract = lambda spreadsheet_id: []  # type: ignore[method-assign]
 
     response, tool_events = agent._run_phase_llm_turns(
         system_prompt="system",
@@ -669,9 +960,41 @@ def test_run_phase_llm_turns_retries_validation_when_contract_incomplete() -> No
     assert response == "validation_attempt_2"
     assert calls["count"] >= 2
     assert any(
-        "validation_contract_incomplete" in str(event.get("guardrail", ""))
+        "phase_contract_incomplete" in str(event.get("guardrail", ""))
         for event in tool_events
     )
+
+
+def test_validate_story_contract_accepts_comma_separated_citation_ids() -> None:
+    agent = object.__new__(LangGraphFinanceAgent)
+    sheets = _StoryContractSheetsComplete()
+
+    original_read = sheets.read_named_ranges
+
+    def _read_named_ranges(
+        spreadsheet_id: str,
+        names: list[str],
+        *,
+        value_render_option: str = "UNFORMATTED_VALUE",
+    ):
+        payload = original_read(
+            spreadsheet_id,
+            names,
+            value_render_option=value_render_option,
+        )
+        payload["story_grid_citations"] = [
+            ["FIN-1, NEWS-1"],
+            ["NEWS-2; NEWS-3"],
+            ["SRC-004"],
+        ]
+        return payload
+
+    sheets.read_named_ranges = _read_named_ranges  # type: ignore[method-assign]
+    agent.sheets_engine = sheets
+
+    issues = agent._validate_story_contract("sheet_123")
+
+    assert not any("citation entries must include URLs" in issue for issue in issues)
 
 
 class _CompsContractSheetsBad:

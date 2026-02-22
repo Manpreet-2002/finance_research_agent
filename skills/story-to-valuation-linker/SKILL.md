@@ -33,6 +33,18 @@ Story anchor map (must follow):
 7. `story_core_narrative_rows` => `Story!C24:C26` (pess/base/opt rows)
 8. `story_linked_operating_driver_rows` => `Story!D24:D26`
 9. `story_kpi_to_track_rows` => `Story!E24:E26`
+10. Keep `story_grid_rows` column B labels unchanged as:
+- `Pessimistic`
+- `Neutral`
+- `Optimistic`
+11. Populate disconfirming evidence in `Story!F24:F26`.
+12. Populate citations in `story_grid_citations` (`Story!G24:G26`) using URL, `source:...`, or citation IDs.
+13. Populate `story_memo_hooks` with exactly 5 columns per row:
+- column 1: claim title (human-readable, resolved values; no raw range IDs)
+- column 2: linked range IDs (comma-separated tokens like `inp_`, `out_`, `sens_`, `comps_`)
+- column 3: memo detail with resolved numeric values
+- column 4: confidence (`High`/`Medium`/`Low`)
+- column 5: citation token(s)
 
 ## Workflow
 
@@ -46,6 +58,8 @@ Story anchor map (must follow):
 - `story_kpi_to_track_rows`
 6. Verify no claim remains unlinked to sheet data.
 7. Populate `story_grid_citations` with explicit URL or `citation_id` tokens for each scenario row.
+8. Ensure each scenario row includes a non-empty disconfirming evidence statement.
+9. Keep range IDs out of prose fields in `story_memo_hooks`; range IDs belong only in column 2.
 
 ## Output contract
 
@@ -64,6 +78,7 @@ Return story-link map with:
 3. Risk statements are concrete and monitorable.
 4. No story text is written into legacy right-side blocks (`Story!C:G`) for thesis/growth/profitability/reinvestment/risk/sanity fields.
 5. Do not leave `Core narrative`, `Linked operating driver`, or `KPI to track` blank for any scenario row.
+6. Do not overwrite scenario labels in `Story!B24:B26`.
 
 ## Required references
 

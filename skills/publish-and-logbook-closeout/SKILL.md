@@ -13,7 +13,7 @@ description: Perform final publish checks, set run completion status, and close 
 ## Mandatory operating constraints
 
 1. Run only after citation and consistency audit passes.
-2. Update status only through Google Sheets API.
+2. `log_status` and `log_end_ts` are orchestration-managed guardrails; do not write them from LLM tool calls.
 3. Do not publish if hard checks fail.
 4. Keep final valuation numbers sourced from existing output ranges.
 5. Do not modify local template files in this repository.
@@ -27,10 +27,9 @@ description: Perform final publish checks, set run completion status, and close 
 ## Workflow
 
 1. Confirm checks, citations, and memo readiness are all green.
-2. Write final run metadata and completion timestamp.
-3. Append final summary row to logbook area.
-4. Persist artifact IDs/links.
-5. Mark status `FAILED` with reason if any gate fails.
+2. Append final summary rationale rows to `Agent Log` tables if needed.
+3. Persist artifact IDs/links.
+4. Report publish readiness and residual risks.
 
 ## Output contract
 

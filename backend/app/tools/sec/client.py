@@ -75,6 +75,8 @@ _INSTANT_CONCEPTS_SHARES: tuple[str, ...] = (
     "CommonStockSharesOutstanding",
     "CommonStockSharesIssued",
 )
+_NAMESPACE_US_GAAP: tuple[str, ...] = ("us-gaap",)
+_NAMESPACE_SHARES_PRIORITY: tuple[str, ...] = ("dei", "us-gaap")
 
 
 class SecClient(Protocol):
@@ -156,6 +158,7 @@ class EdgarSecClient:
                 companyfacts,
                 _INSTANT_CONCEPTS_SHARES,
                 unit="shares",
+                namespaces=_NAMESPACE_SHARES_PRIORITY,
             ),
             diluted_shares=self._latest_flow_value(
                 companyfacts,
@@ -218,7 +221,12 @@ class EdgarSecClient:
         annual_values: list[dict[str, Any]] = []
         quarterly_values: list[dict[str, Any]] = []
         for concept in concept_names:
-            for row in self._concept_rows(payload, concept, unit="USD"):
+            for row in self._concept_rows(
+                payload,
+                concept,
+                unit="USD",
+                namespaces=_NAMESPACE_US_GAAP,
+            ):
                 if row.get("fp") == "FY":
                     annual_values.append(row)
                 elif row.get("fp") in {"Q1", "Q2", "Q3", "Q4"}:
@@ -251,10 +259,18 @@ class EdgarSecClient:
         concept_names: tuple[str, ...],
         *,
         unit: str,
+        namespaces: tuple[str, ...] = _NAMESPACE_US_GAAP,
     ) -> float | None:
         rows: list[dict[str, Any]] = []
         for concept in concept_names:
-            rows.extend(self._concept_rows(payload, concept, unit=unit))
+            rows.extend(
+                self._concept_rows(
+                    payload,
+                    concept,
+                    unit=unit,
+                    namespaces=namespaces,
+                )
+            )
 
         rows = self._sorted_rows_desc(rows)
         for row in rows:
@@ -269,10 +285,18 @@ class EdgarSecClient:
         concept_names: tuple[str, ...],
         *,
         unit: str,
+        namespaces: tuple[str, ...] = _NAMESPACE_US_GAAP,
     ) -> float | None:
         rows: list[dict[str, Any]] = []
         for concept in concept_names:
-            rows.extend(self._concept_rows(payload, concept, unit=unit))
+            rows.extend(
+                self._concept_rows(
+                    payload,
+                    concept,
+                    unit=unit,
+                    namespaces=namespaces,
+                )
+            )
         rows = self._sorted_rows_desc(rows)
         for row in rows:
             value = self._as_float(row.get("val"))
@@ -286,11 +310,19 @@ class EdgarSecClient:
         concept_names: tuple[str, ...],
         *,
         unit: str,
+        namespaces: tuple[str, ...] = _NAMESPACE_US_GAAP,
     ) -> float | None:
         total = 0.0
         found = False
         for concept in concept_names:
-            rows = self._sorted_rows_desc(self._concept_rows(payload, concept, unit=unit))
+            rows = self._sorted_rows_desc(
+                self._concept_rows(
+                    payload,
+                    concept,
+                    unit=unit,
+                    namespaces=namespaces,
+                )
+            )
             for row in rows:
                 value = self._as_float(row.get("val"))
                 if value is None:
@@ -308,30 +340,32 @@ class EdgarSecClient:
         concept_name: str,
         *,
         unit: str,
+        namespaces: tuple[str, ...] = _NAMESPACE_US_GAAP,
     ) -> list[dict[str, Any]]:
         facts = payload.get("facts")
         if not isinstance(facts, dict):
             return []
-        us_gaap = facts.get("us-gaap")
-        if not isinstance(us_gaap, dict):
-            return []
-        concept = us_gaap.get(concept_name)
-        if not isinstance(concept, dict):
-            return []
-        units = concept.get("units")
-        if not isinstance(units, dict):
-            return []
-        rows = units.get(unit)
-        if not isinstance(rows, list):
-            return []
         clean_rows: list[dict[str, Any]] = []
-        for row in rows:
-            if not isinstance(row, dict):
+        for namespace in namespaces:
+            namespace_block = facts.get(namespace)
+            if not isinstance(namespace_block, dict):
                 continue
-            form = str(row.get("form", ""))
-            if not form.startswith("10-K") and not form.startswith("10-Q"):
+            concept = namespace_block.get(concept_name)
+            if not isinstance(concept, dict):
                 continue
-            clean_rows.append(row)
+            units = concept.get("units")
+            if not isinstance(units, dict):
+                continue
+            rows = units.get(unit)
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                form = str(row.get("form", ""))
+                if not form.startswith("10-K") and not form.startswith("10-Q"):
+                    continue
+                clean_rows.append(row)
         return clean_rows
 
     def _sorted_rows_desc(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

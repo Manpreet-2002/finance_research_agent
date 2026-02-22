@@ -16,6 +16,7 @@ description: Execute the scenario DCF by writing inputs to Google Sheets, readin
 2. Never perform valuation arithmetic in code.
 3. Never overwrite output ranges with constants.
 4. Do not mutate local template files.
+5. In `model_run`, read only via `sheets_read_outputs`; do not request ad-hoc `sheets_read_named_ranges`.
 
 ## Sheet targets
 
@@ -27,7 +28,7 @@ description: Execute the scenario DCF by writing inputs to Google Sheets, readin
   - `out_value_ps_weighted`
   - `out_equity_value_weighted`
   - `out_enterprise_value_weighted`
-- Diagnostics: `out_wacc`, `out_terminal_g`
+- Diagnostics: `OUT_WACC`, `out_terminal_g`
 
 ## Workflow
 

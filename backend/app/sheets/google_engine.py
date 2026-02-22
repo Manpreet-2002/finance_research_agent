@@ -32,13 +32,11 @@ DEFAULT_OUTPUT_RANGES: tuple[str, ...] = (
     "out_value_ps_weighted",
     "out_equity_value_weighted",
     "out_enterprise_value_weighted",
-    "out_wacc",
+    "OUT_WACC",
     "out_terminal_g",
 )
 
-_NAMED_RANGE_ALIASES: dict[str, tuple[str, ...]] = {
-    "out_wacc": ("out_wacc", "OUT_WACC"),
-}
+_NAMED_RANGE_ALIASES: dict[str, tuple[str, ...]] = {}
 _INDEX_PREFILLED_APPEND_TABLES: frozenset[str] = frozenset(
     {"log_actions_table", "log_assumptions_table", "log_story_table"}
 )
@@ -127,15 +125,19 @@ class GoogleSheetsEngine(SheetsEngine):
             spreadsheet_id=spreadsheet_id,
             values=values,
         )
+        normalized_values = self._coerce_named_range_write_shapes(
+            spreadsheet_id=spreadsheet_id,
+            values=valid_values,
+        )
         self._logger.info(
             "write_named_ranges spreadsheet_id=%s count=%s ranges=%s",
             spreadsheet_id,
-            len(valid_values),
-            ",".join(sorted(valid_values.keys())[:20]),
+            len(normalized_values),
+            ",".join(sorted(normalized_values.keys())[:20]),
         )
         data = [
-            {"range": key, "values": _normalize_sheet_values(value)}
-            for key, value in valid_values.items()
+            {"range": key, "values": matrix}
+            for key, matrix in normalized_values.items()
         ]
         (
             self._sheets_service()
@@ -640,6 +642,41 @@ class GoogleSheetsEngine(SheetsEngine):
             )
         return values
 
+    def _coerce_named_range_write_shapes(
+        self,
+        *,
+        spreadsheet_id: str,
+        values: dict[str, object],
+    ) -> dict[str, list[list[object]]]:
+        schema = self._load_spreadsheet_schema(spreadsheet_id)
+        normalized: dict[str, list[list[object]]] = {}
+        for name, raw_value in values.items():
+            matrix = _normalize_sheet_values(raw_value)
+            bounds = schema.named_range_bounds.get(name)
+            if bounds is None:
+                normalized[name] = matrix
+                continue
+            target_width, target_height = _bounds_size(bounds)
+            if target_width <= 0 or target_height <= 0:
+                normalized[name] = matrix
+                continue
+            coerced, mode = _coerce_matrix_for_named_range(
+                name=name,
+                matrix=matrix,
+                target_rows=target_height,
+                target_cols=target_width,
+            )
+            if mode:
+                self._logger.info(
+                    "write_named_ranges_shape_coerced range=%s mode=%s before=%s after=%s",
+                    name,
+                    mode,
+                    _matrix_shape_summary(matrix),
+                    _matrix_shape_summary(coerced),
+                )
+            normalized[name] = coerced
+        return normalized
+
     def _resolve_named_table_bounds(
         self,
         *,
@@ -750,6 +787,78 @@ def _normalize_sheet_values(value: object) -> list[list[object]]:
             return [list(row) for row in value]  # type: ignore[arg-type]
         return [list(value)]  # type: ignore[arg-type]
     return [[value]]
+
+
+def _coerce_matrix_for_named_range(
+    *,
+    name: str,
+    matrix: list[list[object]],
+    target_rows: int,
+    target_cols: int,
+) -> tuple[list[list[object]], str | None]:
+    if target_rows <= 0 or target_cols <= 0:
+        return matrix, None
+    flattened = _flatten_matrix_values(matrix)
+    cell_count = len(flattened)
+    expected_cells = target_rows * target_cols
+    if target_rows == 1 or target_cols == 1:
+        expected_len = max(target_rows, target_cols)
+        if cell_count != expected_len:
+            raise ValueError(
+                "Named range write shape mismatch for "
+                f"{name}: expected {target_rows}x{target_cols} "
+                f"({expected_len} cells), received {_matrix_shape_summary(matrix)} "
+                f"({cell_count} cells)."
+            )
+        if target_rows == 1:
+            coerced = [flattened]
+            mode = None if _matrix_shape_summary(matrix) == _matrix_shape_summary(coerced) else "column_to_row"
+            return coerced, mode
+        coerced = [[value] for value in flattened]
+        mode = None if _matrix_shape_summary(matrix) == _matrix_shape_summary(coerced) else "row_to_column"
+        return coerced, mode
+
+    if cell_count != expected_cells:
+        raise ValueError(
+            "Named range write shape mismatch for "
+            f"{name}: expected {target_rows}x{target_cols} "
+            f"({expected_cells} cells), received {_matrix_shape_summary(matrix)} "
+            f"({cell_count} cells)."
+        )
+    if len(matrix) != target_rows:
+        raise ValueError(
+            "Named range write shape mismatch for "
+            f"{name}: expected {target_rows} rows, received {len(matrix)} "
+            f"({_matrix_shape_summary(matrix)})."
+        )
+    for row in matrix:
+        if len(row) != target_cols:
+            raise ValueError(
+                "Named range write shape mismatch for "
+                f"{name}: expected row width {target_cols}, received ragged matrix "
+                f"({_matrix_shape_summary(matrix)})."
+            )
+    return [list(row) for row in matrix], None
+
+
+def _flatten_matrix_values(matrix: list[list[object]]) -> list[object]:
+    flattened: list[object] = []
+    for row in matrix:
+        if isinstance(row, list):
+            flattened.extend(row)
+        else:
+            flattened.append(row)
+    return flattened
+
+
+def _matrix_shape_summary(matrix: list[list[object]]) -> str:
+    row_count = len(matrix)
+    if row_count == 0:
+        return "0x0"
+    widths = sorted({len(row) if isinstance(row, list) else 1 for row in matrix})
+    if len(widths) == 1:
+        return f"{row_count}x{widths[0]}"
+    return f"{row_count}x{max(widths)}(ragged)"
 
 
 def _normalize_named_range_list(names: list[str]) -> list[str]:

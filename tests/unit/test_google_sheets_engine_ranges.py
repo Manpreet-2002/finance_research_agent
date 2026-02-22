@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from backend.app.sheets.google_engine import (
     _RangeBounds,
+    _coerce_matrix_for_named_range,
     _first_empty_row_offset,
     _is_formula_owned_name,
     _overlaps_formula_owned,
@@ -51,22 +52,22 @@ def test_formula_owned_named_range_detection() -> None:
     assert not _is_formula_owned_name("inp_base_wacc")
 
 
-def test_resolve_named_range_targets_supports_output_alias() -> None:
+def test_resolve_named_range_targets_requires_exact_named_range() -> None:
     resolved, missing = _resolve_named_range_targets(
-        names=["out_wacc"],
+        names=["OUT_WACC"],
         known_ranges={"OUT_WACC", "out_terminal_g"},
     )
     assert missing == []
-    assert resolved["out_wacc"] == "OUT_WACC"
+    assert resolved["OUT_WACC"] == "OUT_WACC"
 
 
 def test_resolve_named_range_targets_reports_missing_when_no_alias_exists() -> None:
     resolved, missing = _resolve_named_range_targets(
-        names=["out_wacc"],
+        names=["OUT_WACC"],
         known_ranges={"out_terminal_g"},
     )
     assert resolved == {}
-    assert missing == ["out_wacc"]
+    assert missing == ["OUT_WACC"]
 
 
 def test_first_empty_row_offset_handles_prefilled_index_rows() -> None:
@@ -81,3 +82,57 @@ def test_first_empty_row_offset_handles_prefilled_index_rows() -> None:
         )
         == 0
     )
+
+
+def test_coerce_matrix_for_named_range_column_to_row() -> None:
+    matrix, mode = _coerce_matrix_for_named_range(
+        name="sens_terminal_g_vector",
+        matrix=[[0.01], [0.015], [0.02], [0.025], [0.03]],
+        target_rows=1,
+        target_cols=5,
+    )
+    assert mode == "column_to_row"
+    assert matrix == [[0.01, 0.015, 0.02, 0.025, 0.03]]
+
+
+def test_coerce_matrix_for_named_range_row_to_column() -> None:
+    matrix, mode = _coerce_matrix_for_named_range(
+        name="sens_wacc_vector",
+        matrix=[[0.085, 0.09, 0.095, 0.1, 0.105]],
+        target_rows=5,
+        target_cols=1,
+    )
+    assert mode == "row_to_column"
+    assert matrix == [[0.085], [0.09], [0.095], [0.1], [0.105]]
+
+
+def test_coerce_matrix_for_named_range_vector_length_mismatch_raises() -> None:
+    try:
+        _coerce_matrix_for_named_range(
+            name="sens_wacc_vector",
+            matrix=[[0.085, 0.09, 0.095, 0.1]],
+            target_rows=5,
+            target_cols=1,
+        )
+    except ValueError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("Expected ValueError for vector length mismatch.")
+    assert "sens_wacc_vector" in message
+    assert "expected 5x1" in message
+
+
+def test_coerce_matrix_for_named_range_rectangular_requires_exact_shape() -> None:
+    try:
+        _coerce_matrix_for_named_range(
+            name="sens_grid_values",
+            matrix=[[1, 2, 3, 4]],
+            target_rows=2,
+            target_cols=2,
+        )
+    except ValueError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("Expected ValueError for rectangular shape mismatch.")
+    assert "sens_grid_values" in message
+    assert "expected 2 rows" in message

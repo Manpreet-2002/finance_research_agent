@@ -221,6 +221,7 @@ def _phase_v1_range_specs() -> tuple[NamedRangeSpec, ...]:
         NamedRangeSpec("log_assumptions_table", "Agent Log", 221, 246, 2, 11),
         NamedRangeSpec("log_story_table", "Agent Log", 251, 286, 2, 10),
         NamedRangeSpec("checks_statuses", "Checks", 5, 17, 3, 3),
+        NamedRangeSpec("OUT_WACC", "Output", 9, 9, 3, 3),
         NamedRangeSpec("story_grid_header", "Story", 23, 23, 2, 7),
         NamedRangeSpec("story_grid_rows", "Story", 24, 26, 2, 7),
         NamedRangeSpec("story_grid_citations", "Story", 24, 26, 7, 7),
@@ -266,10 +267,12 @@ def run(args: argparse.Namespace) -> int:
     sheet_ids = {title: info.sheet_id for title, info in sheet_meta.items()}
 
     existing_by_name: dict[str, dict[str, Any]] = {}
+    existing_by_name_casefold: dict[str, dict[str, Any]] = {}
     for named in meta.get("namedRanges", []):
         name = str(named.get("name") or "").strip()
         if name:
             existing_by_name[name] = named
+            existing_by_name_casefold[name.casefold()] = named
 
     requests: list[dict[str, Any]] = []
     dimension_requests: list[dict[str, Any]] = []
@@ -322,6 +325,8 @@ def run(args: argparse.Namespace) -> int:
     for spec in _phase_v1_range_specs():
         target_grid = _grid_range(spec, sheet_ids)
         existing = existing_by_name.get(spec.name)
+        if existing is None:
+            existing = existing_by_name_casefold.get(spec.name.casefold())
 
         if existing is None:
             requests.append(

@@ -17,16 +17,20 @@ description: Run deterministic pre-model data quality checks on canonical inputs
 2. Never use A1 notation or arbitrary row/column access.
 3. Do not write formula-owned ranges (`out_*`, `calc_*`).
 4. Keep final valuation math in Google Sheets formulas.
-5. Record every material remediation in `log_actions_table` or `log_assumptions_table`.
+5. Core inputs (`inp_rev_ttm`, `inp_ebit_ttm`, `inp_tax_ttm`, `inp_cash`, `inp_debt`, `inp_basic_shares`, `inp_px`, `inp_rf`, `inp_erp`, `inp_beta`) are orchestrator-owned baselines in this phase; only orchestrator repair logic may overwrite them.
+6. Record every material remediation in `log_actions_table` or `log_assumptions_table`.
 
 ## Required checks
 
 1. Core input completeness
 - Validate `inp_rev_ttm`, `inp_ebit_ttm`, `inp_tax_ttm`, `inp_px`, `inp_rf`, `inp_erp`, `inp_beta`, `inp_cash`, `inp_debt`, `inp_basic_shares`.
 - Missing/invalid numeric fields are blocking issues.
+- Baseline drift versus orchestrator-reconciled canonical inputs is a blocking issue.
 
 2. Unit/range sanity
 - Tax rates must be in a realistic band.
+- `inp_tax_ttm` is an effective tax **rate** only (decimal). Valid forms: `0.19` or `19%`.
+- Never write absolute tax expense dollars into `inp_tax_ttm`.
 - Price and shares must be positive.
 - Rates and beta must be plausible for a public US equity.
 

@@ -55,13 +55,44 @@ _CANONICAL_QUALITY_REQUIRED_RANGES: tuple[str, ...] = (
     "inp_tsm_tranche1_count_mm",
     "inp_tsm_tranche1_type",
 )
+_CANONICAL_QUALITY_NUMERIC_BOUNDS: dict[str, tuple[float, float]] = {
+    "inp_rev_ttm": (0.0, 10_000_000.0),
+    "inp_ebit_ttm": (-5_000_000.0, 5_000_000.0),
+    "inp_tax_ttm": (-0.10, 0.60),
+    "inp_cash": (0.0, 5_000_000.0),
+    "inp_debt": (0.0, 5_000_000.0),
+    "inp_basic_shares": (0.0, 10_000_000.0),
+    "inp_px": (0.01, 20_000.0),
+    "inp_rf": (0.0, 0.15),
+    "inp_erp": (0.0, 0.20),
+    "inp_beta": (0.0, 5.0),
+}
 _SOURCES_TABLE_SCHEMA_WIDTH = 11
 _SOURCES_REQUIRED_COLUMN_INDEXES: tuple[int, ...] = (0, 1, 2, 3, 4, 5, 10)
+_SOURCES_TABLE_HEADER_ROW: tuple[str, ...] = (
+    "field_block",
+    "source_type",
+    "dataset_doc",
+    "url",
+    "as_of_date",
+    "notes",
+    "metric",
+    "value",
+    "unit",
+    "transform",
+    "citation_id",
+)
 _COMPS_REQUIRED_HEADER_FIRST = "ticker"
 _COMPS_REQUIRED_HEADER_LAST = "notes"
 _COMPS_ALLOWED_WRITE_TABLE = "comps_table_full"
 _COMPS_TABLE_NAMES: frozenset[str] = frozenset({"comps_table", "comps_table_full"})
 _COMPS_NON_NUMERIC_HEADERS: frozenset[str] = frozenset({"name"})
+_COMPS_DERIVED_CONTROL_RANGES: frozenset[str] = frozenset(
+    {"comps_peer_count", "comps_multiple_count"}
+)
+_SHEETS_RUNTIME_READ_ONLY_RANGES: frozenset[str] = frozenset(
+    {"story_grid_header", "log_status", "log_end_ts"}
+)
 _LOG_TABLE_SCHEMA_WIDTHS: dict[str, int] = {
     "log_actions_table": 9,
     "log_assumptions_table": 10,
@@ -147,6 +178,7 @@ _COMPS_ROW_NOTE_REQUIRED_SIGNALS: tuple[str, ...] = (
     "multiple",
     "valuation",
 )
+_SHEETS_READ_RANGE_ALIASES: dict[str, str] = {}
 _TABLE_ROWS_SCHEMA: dict[str, Any] = {
     "type": "array",
     "description": (
@@ -530,9 +562,10 @@ def build_phase_v1_tool_registry(
                         "required": ["spreadsheet_id", "names"],
                     },
                     handler=lambda payload: _json_result(
-                        sheets_engine.read_named_ranges(
-                            str(payload["spreadsheet_id"]),
-                            _list_of_strings(payload.get("names")),
+                        _call_sheets_read_named_ranges(
+                            sheets_engine=sheets_engine,
+                            spreadsheet_id=str(payload["spreadsheet_id"]),
+                            names=_list_of_strings(payload.get("names")),
                             value_render_option=str(
                                 payload.get("value_render_option")
                                 or "UNFORMATTED_VALUE"
@@ -608,8 +641,66 @@ def _call_sheets_write(
     *, sheets_engine: SheetsEngine, spreadsheet_id: str, values: dict[str, Any]
 ) -> dict[str, Any]:
     normalized_values = _normalize_named_range_values(values)
-    sheets_engine.write_named_ranges(spreadsheet_id=spreadsheet_id, values=normalized_values)
-    return {"ok": True, "written_ranges": len(values)}
+    _validate_named_range_write_payload(normalized_values)
+    (
+        writable_values,
+        dropped_ranges,
+    ) = _drop_derived_control_range_writes(normalized_values)
+    if writable_values:
+        sheets_engine.write_named_ranges(
+            spreadsheet_id=spreadsheet_id,
+            values=writable_values,
+        )
+    if dropped_ranges:
+        LOGGER.info(
+            "sheets_write_named_ranges_dropped ranges=%s reason=derived_controls_managed_by_comps_table_write",
+            ",".join(dropped_ranges),
+        )
+    return {
+        "ok": True,
+        "written_ranges": len(writable_values),
+        "dropped_ranges": dropped_ranges,
+    }
+
+
+def _call_sheets_read_named_ranges(
+    *,
+    sheets_engine: SheetsEngine,
+    spreadsheet_id: str,
+    names: list[str],
+    value_render_option: str,
+) -> dict[str, list[list[object]]]:
+    requested_names: list[str] = []
+    canonical_names: list[str] = []
+    for raw_name in names:
+        requested = str(raw_name).strip()
+        if not requested:
+            continue
+        canonical = _SHEETS_READ_RANGE_ALIASES.get(
+            requested.casefold(), requested
+        )
+        requested_names.append(requested)
+        canonical_names.append(canonical)
+        if canonical != requested:
+            LOGGER.info(
+                "sheets_read_named_ranges_alias requested=%s canonical=%s",
+                requested,
+                canonical,
+            )
+
+    payload = sheets_engine.read_named_ranges(
+        spreadsheet_id,
+        canonical_names,
+        value_render_option=value_render_option,
+    )
+
+    enriched = dict(payload)
+    for requested, canonical in zip(requested_names, canonical_names, strict=False):
+        if requested in enriched:
+            continue
+        if canonical in payload:
+            enriched[requested] = payload[canonical]
+    return enriched
 
 
 def _normalize_named_range_values(values: dict[str, Any]) -> dict[str, Any]:
@@ -617,6 +708,62 @@ def _normalize_named_range_values(values: dict[str, Any]) -> dict[str, Any]:
     for name, value in values.items():
         normalized[name] = _normalize_named_range_value(name=name, value=value)
     return normalized
+
+
+def _validate_named_range_write_payload(values: dict[str, Any]) -> None:
+    if not values:
+        return
+    normalized_names = [str(name).strip().lower() for name in values.keys()]
+    read_only = [
+        name
+        for name in normalized_names
+        if name in _SHEETS_RUNTIME_READ_ONLY_RANGES
+    ]
+    if read_only:
+        raise ValueError(
+            "Named-range write blocked for runtime read-only ranges: "
+            f"{', '.join(sorted(set(read_only)))}."
+        )
+    has_story = any(name.startswith("story_") for name in normalized_names)
+    has_comps = any(name.startswith("comps_") for name in normalized_names)
+    if has_story and has_comps:
+        raise ValueError(
+            "Do not mix story_* and comps_* named-range writes in one call. "
+            "Split into separate tool calls."
+        )
+    _validate_strict_named_range_semantics(values)
+
+
+def _validate_strict_named_range_semantics(values: dict[str, Any]) -> None:
+    for name, value in values.items():
+        normalized_name = str(name or "").strip().lower()
+        if normalized_name != "inp_tax_ttm":
+            continue
+        rate = _to_optional_rate_scalar(value)
+        if rate is None:
+            raise ValueError(
+                "inp_tax_ttm must be numeric and expressed as a decimal effective tax rate "
+                "(for example 0.19 or 19%)."
+            )
+        if not (-0.10 <= rate <= 0.60):
+            raise ValueError(
+                "inp_tax_ttm must be a realistic effective tax rate in decimal form "
+                f"(observed={rate})."
+            )
+
+
+def _drop_derived_control_range_writes(
+    values: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    writable: dict[str, Any] = {}
+    dropped: list[str] = []
+    for name, value in values.items():
+        normalized = str(name).strip().lower()
+        if normalized in _COMPS_DERIVED_CONTROL_RANGES:
+            dropped.append(str(name))
+            continue
+        writable[name] = value
+    return writable, sorted(dropped)
 
 
 def _normalize_named_range_value(*, name: str, value: Any) -> Any:
@@ -652,13 +799,27 @@ def _to_optional_numeric_scalar(value: Any) -> float | None:
         return float(value)
     if not isinstance(value, str):
         return None
-    text = value.strip()
+    text = value.strip().replace(",", "")
     if not text or text.startswith("="):
         return None
+    if text.endswith("%"):
+        try:
+            return float(text[:-1])
+        except ValueError:
+            return None
     try:
         return float(text)
     except ValueError:
         return None
+
+
+def _to_optional_rate_scalar(value: Any) -> float | None:
+    numeric = _to_optional_numeric_scalar(value)
+    if numeric is None:
+        return None
+    if 1.0 < abs(numeric) <= 100.0:
+        return numeric / 100.0
+    return numeric
 
 
 def _call_sheets_append_named_table_rows(
@@ -749,7 +910,8 @@ def _validate_named_table_rows(
 def _prepare_named_table_rows(*, table_name: str, rows: list[list[object]]) -> list[list[object]]:
     normalized = table_name.strip().lower()
     if normalized == "sources_table":
-        return [_normalize_sources_row(row) for row in rows]
+        prepared = [_normalize_sources_row(row) for row in rows]
+        return _strip_sources_header_rows(prepared)
     if normalized in _LOG_TABLE_SCHEMA_WIDTHS:
         width = _LOG_TABLE_SCHEMA_WIDTHS[normalized]
         return [_normalize_log_table_row(row, width=width) for row in rows]
@@ -761,6 +923,22 @@ def _normalize_sources_row(row: list[object]) -> list[object]:
     if len(values) == _SOURCES_TABLE_SCHEMA_WIDTH:
         values[4] = _normalize_source_as_of_date(values[4])
     return values
+
+
+def _strip_sources_header_rows(rows: list[list[object]]) -> list[list[object]]:
+    if rows and _is_sources_header_row(rows[0]):
+        LOGGER.info(
+            "sources_table_header_row_dropped reason=header_included_in_rows_payload"
+        )
+        return rows[1:]
+    return rows
+
+
+def _is_sources_header_row(row: list[object]) -> bool:
+    if len(row) != _SOURCES_TABLE_SCHEMA_WIDTH:
+        return False
+    normalized = tuple(_normalize_table_text_cell(cell).casefold() for cell in row)
+    return normalized == _SOURCES_TABLE_HEADER_ROW
 
 
 def _normalize_log_table_row(row: list[object], *, width: int) -> list[object]:
@@ -1062,12 +1240,44 @@ def _build_canonical_quality_report(named_ranges: dict[str, Any]) -> dict[str, A
         for name in _CANONICAL_QUALITY_REQUIRED_RANGES
         if name in named_ranges and named_ranges.get(name) in (None, "")
     ]
+    plausibility_issues = _canonical_plausibility_issues(named_ranges)
+    is_complete = not missing_ranges and not null_ranges
+    is_plausible = not plausibility_issues
     return {
         "required_count": len(_CANONICAL_QUALITY_REQUIRED_RANGES),
         "missing_ranges": missing_ranges,
         "null_ranges": null_ranges,
-        "is_complete": not missing_ranges and not null_ranges,
+        "is_complete": is_complete,
+        "is_plausible": is_plausible,
+        "is_ready": is_complete and is_plausible,
+        "plausibility_issues": plausibility_issues,
     }
+
+
+def _canonical_plausibility_issues(named_ranges: dict[str, Any]) -> list[str]:
+    issues: list[str] = []
+    numeric_values: dict[str, float] = {}
+    for range_name, (lower, upper) in _CANONICAL_QUALITY_NUMERIC_BOUNDS.items():
+        raw_value = named_ranges.get(range_name)
+        numeric = _to_optional_numeric_scalar(raw_value)
+        if numeric is None:
+            continue
+        numeric_values[range_name] = numeric
+        if numeric < lower or numeric > upper:
+            issues.append(
+                f"{range_name} out of bounds ({numeric:.6f}; expected {lower}..{upper})."
+            )
+
+    revenue = numeric_values.get("inp_rev_ttm")
+    ebit = numeric_values.get("inp_ebit_ttm")
+    if revenue is not None and revenue <= 0:
+        issues.append("inp_rev_ttm must be > 0.")
+    if revenue is not None and ebit is not None and abs(ebit) > (abs(revenue) * 5.0):
+        issues.append(
+            "inp_ebit_ttm magnitude is implausible versus inp_rev_ttm "
+            f"(ebit={ebit:.6f}, revenue={revenue:.6f})."
+        )
+    return issues
 
 
 def _persist_canonical_dataset_artifact(

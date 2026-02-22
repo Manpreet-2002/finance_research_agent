@@ -28,7 +28,7 @@ description: Capture ticker mandate, decision horizon, risk posture, and high-im
 ## Sheet writes
 
 - `inp_ticker`, `inp_name`
-- `log_run_id`, `log_status`, `log_start_ts`
+- `log_run_id` (status/timestamps are orchestration-managed)
 - Initial `Action Ledger` rows at `log_actions_firstrow`
 
 ## Workflow

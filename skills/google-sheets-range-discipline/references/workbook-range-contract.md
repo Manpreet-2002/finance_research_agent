@@ -45,6 +45,7 @@ Comps write rules:
 2. Header must start with `Ticker` and end with `Notes`.
 3. First data row must be the target ticker.
 4. `comps_peer_count` includes target row.
+5. `comps_peer_count` and `comps_multiple_count` are derived controls from `comps_table_full`; do not write them directly with `sheets_write_named_ranges`.
 
 ## Named table anchors
 
@@ -52,6 +53,13 @@ Comps write rules:
 2. `log_actions_table`
 3. `log_assumptions_table`
 4. `log_story_table`
+
+## Sensitivity shape contract
+
+1. `sens_wacc_vector` => `5x1` column vector.
+2. `sens_terminal_g_vector` => `1x5` row vector.
+3. `sens_grid_values` => `5x5` grid.
+4. Orientation mismatches are invalid payloads and should be corrected before write.
 
 ## Story linkage contract
 
@@ -70,7 +78,14 @@ Comps write rules:
 - `story_core_narrative_rows`
 - `story_linked_operating_driver_rows`
 - `story_kpi_to_track_rows`
-4. `story_memo_hooks` must contain claim-to-range hook rows for memo assembly.
+4. `story_memo_hooks` must contain 3 rows with 5 columns per row:
+- `claim_title` (resolved values; no raw range IDs)
+- `linked_ranges_csv` (comma-separated named-range IDs)
+- `memo_detail` (resolved value narrative)
+- `confidence` (`High`/`Medium`/`Low`)
+- `citation_token`
+5. `story_grid_header` is template-owned/read-only at runtime.
+6. `story_grid_rows` column 1 must remain scenario labels: `Pessimistic`, `Neutral`, `Optimistic`.
 
 Log table widths:
 1. `log_actions_table` => 9 columns
@@ -93,6 +108,7 @@ Log table widths:
 - `sheets_write_ranges`
 - `sheets_read_ranges`
 - Any A1 payload (`Tab!A1`, `A1:B10`)
+- runtime read-only named ranges (`story_grid_header`, `log_status`, `log_end_ts`)
 
 ## Valid vs invalid examples
 

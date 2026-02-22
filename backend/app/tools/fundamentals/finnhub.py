@@ -73,6 +73,17 @@ def _extract_first_concept_value(
     return None
 
 
+def _extract_concept_value_by_priority(
+    entries: list[dict[str, Any]],
+    concept_names: tuple[str, ...],
+) -> float | None:
+    for concept_name in concept_names:
+        result = _extract_first_concept_value(entries, {concept_name})
+        if result is not None:
+            return result
+    return None
+
+
 @dataclass
 class FinnhubFundamentalsClient(FundamentalsClient):
     """Fetches company fundamentals from Finnhub endpoints."""
@@ -120,20 +131,25 @@ class FinnhubFundamentalsClient(FundamentalsClient):
     ) -> CompanyFundamentals:
         metric_values = metrics.get("metric") or {}
         reported_rows = reported.get("data") or []
-        latest_quarters = reported_rows[:4]
+        latest_quarters = self._select_recent_quarterly_rows(
+            reported_rows,
+            limit=4,
+        )
 
         revenue_ttm = self._sum_quarterly_ic(
             latest_quarters,
-            {
+            (
                 "RevenueFromContractWithCustomerExcludingAssessedTax",
                 "Revenues",
                 "SalesRevenueNet",
                 "Revenue",
-            },
+            ),
+            min_periods=3,
         )
         ebit_ttm = self._sum_quarterly_ic(
             latest_quarters,
-            {"OperatingIncomeLoss", "EarningsBeforeInterestAndTaxes"},
+            ("OperatingIncomeLoss", "EarningsBeforeInterestAndTaxes"),
+            min_periods=3,
         )
         if revenue_ttm is None:
             revenue_ttm = self._metric_revenue_ttm(metric_values, profile)
@@ -142,11 +158,13 @@ class FinnhubFundamentalsClient(FundamentalsClient):
 
         tax_expense_ttm = self._sum_quarterly_ic(
             latest_quarters,
-            {"IncomeTaxExpenseBenefit", "IncomeTaxesPaidNet"},
+            ("IncomeTaxExpenseBenefit", "IncomeTaxesPaidNet"),
+            min_periods=2,
         )
         pretax_income_ttm = self._sum_quarterly_ic(
             latest_quarters,
-            {"IncomeBeforeTax", "IncomeLossFromContinuingOperationsBeforeIncomeTaxes"},
+            ("IncomeBeforeTax", "IncomeLossFromContinuingOperationsBeforeIncomeTaxes"),
+            min_periods=2,
         )
         tax_rate_ttm = None
         if tax_expense_ttm is not None and pretax_income_ttm not in (None, 0):
@@ -154,41 +172,46 @@ class FinnhubFundamentalsClient(FundamentalsClient):
 
         da_ttm = self._sum_quarterly_cf(
             latest_quarters,
-            {"DepreciationDepletionAndAmortization", "Depreciation"},
+            ("DepreciationDepletionAndAmortization", "Depreciation"),
+            min_periods=2,
         )
         rd_ttm = self._sum_quarterly_ic(
             latest_quarters,
-            {
+            (
                 "ResearchAndDevelopmentExpense",
                 "ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost",
-            },
+            ),
+            min_periods=2,
         )
         rent_ttm = self._sum_quarterly_ic(
             latest_quarters,
-            {
+            (
                 "OperatingLeaseExpense",
                 "LeaseAndRentalExpense",
                 "OperatingLeaseCost",
-            },
+            ),
+            min_periods=2,
         )
 
         capex_raw = self._sum_quarterly_cf(
             latest_quarters,
-            {
+            (
                 "PaymentsToAcquirePropertyPlantAndEquipment",
                 "CapitalExpenditure",
                 "PurchaseOfPropertyPlantAndEquipment",
-            },
+            ),
+            min_periods=2,
         )
         capex_ttm = abs(capex_raw) if capex_raw is not None else None
 
         delta_nwc_ttm = self._sum_quarterly_cf(
             latest_quarters,
-            {
+            (
                 "IncreaseDecreaseInOperatingCapital",
                 "IncreaseDecreaseInOperatingAssetsLiabilitiesNet",
                 "IncreaseDecreaseInOperatingAssetsAndLiabilities",
-            },
+            ),
+            min_periods=2,
         )
 
         cash_latest = self._latest_quarter_bs_value(
@@ -273,26 +296,49 @@ class FinnhubFundamentalsClient(FundamentalsClient):
         )
 
     def _sum_quarterly_ic(
-        self, quarters: list[dict[str, Any]], concept_names: set[str]
+        self,
+        quarters: list[dict[str, Any]],
+        concept_names: tuple[str, ...],
+        *,
+        min_periods: int = 1,
     ) -> float | None:
-        return self._sum_quarterly_section(quarters, "ic", concept_names)
+        return self._sum_quarterly_section(
+            quarters,
+            "ic",
+            concept_names,
+            min_periods=min_periods,
+        )
 
     def _sum_quarterly_cf(
-        self, quarters: list[dict[str, Any]], concept_names: set[str]
+        self,
+        quarters: list[dict[str, Any]],
+        concept_names: tuple[str, ...],
+        *,
+        min_periods: int = 1,
     ) -> float | None:
-        return self._sum_quarterly_section(quarters, "cf", concept_names)
+        return self._sum_quarterly_section(
+            quarters,
+            "cf",
+            concept_names,
+            min_periods=min_periods,
+        )
 
     def _sum_quarterly_section(
-        self, quarters: list[dict[str, Any]], section: str, concept_names: set[str]
+        self,
+        quarters: list[dict[str, Any]],
+        section: str,
+        concept_names: tuple[str, ...],
+        *,
+        min_periods: int = 1,
     ) -> float | None:
         values: list[float] = []
         for item in quarters:
             report = item.get("report") or {}
             entries = report.get(section) or []
-            concept_total = _extract_concept_total(entries, concept_names)
-            if concept_total is not None:
-                values.append(concept_total)
-        if not values:
+            concept_value = _extract_concept_value_by_priority(entries, concept_names)
+            if concept_value is not None:
+                values.append(concept_value)
+        if len(values) < max(1, min_periods):
             return None
         return float(sum(values))
 
@@ -329,11 +375,79 @@ class FinnhubFundamentalsClient(FundamentalsClient):
                 return value
         return None
 
+    def _select_recent_quarterly_rows(
+        self, reported_rows: list[dict[str, Any]], *, limit: int
+    ) -> list[dict[str, Any]]:
+        candidates: list[tuple[datetime, dict[str, Any]]] = []
+        seen_end_dates: set[str] = set()
+        for row in reported_rows:
+            if not isinstance(row, dict):
+                continue
+            end_date_text = str(
+                row.get("endDate") or row.get("end_date") or row.get("end") or ""
+            ).strip()
+            if not end_date_text:
+                continue
+            if end_date_text in seen_end_dates:
+                continue
+            if not self._is_quarter_like_row(row):
+                continue
+            parsed_end = self._parse_report_date(end_date_text)
+            if parsed_end is None:
+                continue
+            candidates.append((parsed_end, row))
+            seen_end_dates.add(end_date_text)
+
+        if not candidates:
+            fallback_rows: list[dict[str, Any]] = []
+            for row in reported_rows[:limit]:
+                if isinstance(row, dict):
+                    fallback_rows.append(row)
+            return fallback_rows
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return [row for _, row in candidates[:limit]]
+
+    def _is_quarter_like_row(self, row: dict[str, Any]) -> bool:
+        period = str(
+            row.get("fiscalPeriod")
+            or row.get("period")
+            or row.get("quarter")
+            or ""
+        ).strip().upper()
+        if period in {"FY", "ANNUAL"}:
+            return False
+
+        start_text = str(
+            row.get("startDate") or row.get("start_date") or row.get("start") or ""
+        ).strip()
+        end_text = str(
+            row.get("endDate") or row.get("end_date") or row.get("end") or ""
+        ).strip()
+        start_date = self._parse_report_date(start_text)
+        end_date = self._parse_report_date(end_text)
+        if start_date is None or end_date is None:
+            return True
+        span_days = (end_date - start_date).days
+        return 60 <= span_days <= 130
+
+    def _parse_report_date(self, value: str) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
     def _cash_from_cash_per_share(
         self, metric_values: dict[str, Any], profile: dict[str, Any]
     ) -> float | None:
         cash_per_share = _first_number(metric_values, ["cashPerShare"])
-        shares = self._shares_for_metric_fallback(metric_values, profile)
+        shares = self._shares_for_metric_fallback_absolute(metric_values, profile)
         if cash_per_share is None or shares is None:
             return None
         return cash_per_share * shares
@@ -345,6 +459,20 @@ class FinnhubFundamentalsClient(FundamentalsClient):
             profile.get("shareOutstanding")
         )
 
+    def _shares_for_metric_fallback_absolute(
+        self, metric_values: dict[str, Any], profile: dict[str, Any]
+    ) -> float | None:
+        shares = self._shares_for_metric_fallback(metric_values, profile)
+        return self._normalize_shares_absolute(shares)
+
+    def _normalize_shares_absolute(self, shares: float | None) -> float | None:
+        if shares is None:
+            return None
+        numeric = float(shares)
+        if 1 <= abs(numeric) < 1_000_000:
+            return numeric * 1_000_000
+        return numeric
+
     def _metric_revenue_ttm(
         self, metric_values: dict[str, Any], profile: dict[str, Any]
     ) -> float | None:
@@ -352,7 +480,7 @@ class FinnhubFundamentalsClient(FundamentalsClient):
             metric_values,
             ["revenuePerShareTTM", "revenuePerShareAnnual"],
         )
-        shares = self._shares_for_metric_fallback(metric_values, profile)
+        shares = self._shares_for_metric_fallback_absolute(metric_values, profile)
         if revenue_per_share is None or shares is None:
             return None
         return revenue_per_share * shares
