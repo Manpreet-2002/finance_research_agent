@@ -49,3 +49,6 @@ class SheetsEngine(Protocol):
 
     def append_logbook_run(self, summary_row: list[object]) -> None:
         """Append a single row into the centralized Runs logbook tab."""
+
+    def set_anyone_with_link_reader(self, spreadsheet_id: str) -> dict[str, object]:
+        """Set sharing to "anyone with the link" reader and return API metadata."""

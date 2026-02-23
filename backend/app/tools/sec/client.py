@@ -12,11 +12,12 @@ from ..http_client import HttpJsonClient
 SEC_BASE_URL = "https://data.sec.gov/api/xbrl/companyfacts"
 SEC_TICKER_MAP_URL = "https://www.sec.gov/files/company_tickers.json"
 
-_FLOW_CONCEPTS_REVENUE: tuple[str, ...] = (
+_FLOW_CONCEPTS_REVENUE_TOPLINE_PRIORITY: tuple[str, ...] = (
+    "RevenuesNetOfInterestExpense",
     "Revenues",
-    "RevenueFromContractWithCustomerExcludingAssessedTax",
     "SalesRevenueNet",
     "Revenue",
+    "RevenueFromContractWithCustomerExcludingAssessedTax",
 )
 _FLOW_CONCEPTS_EBIT: tuple[str, ...] = (
     "OperatingIncomeLoss",
@@ -108,7 +109,10 @@ class EdgarSecClient:
         cik = int(company_meta["cik_str"])
         companyfacts = self._get_companyfacts(cik)
 
-        revenue_ttm = self._latest_flow_ttm(companyfacts, _FLOW_CONCEPTS_REVENUE)
+        revenue_ttm = self._latest_flow_ttm_prioritized(
+            companyfacts,
+            _FLOW_CONCEPTS_REVENUE_TOPLINE_PRIORITY,
+        )
         ebit_ttm = self._latest_flow_ttm(companyfacts, _FLOW_CONCEPTS_EBIT)
         tax_expense_ttm = self._latest_flow_ttm(companyfacts, _FLOW_CONCEPTS_TAX_EXPENSE)
         pretax_income_ttm = self._latest_flow_ttm(
@@ -252,6 +256,64 @@ class EdgarSecClient:
         if count == 0:
             return None
         return total
+
+    def _latest_flow_ttm_prioritized(
+        self, payload: dict[str, Any], concept_names: tuple[str, ...]
+    ) -> float | None:
+        """Return latest available TTM with concept-priority tiebreak for top-line revenue."""
+        candidates: list[tuple[str, str, int, float]] = []
+        for priority, concept in enumerate(concept_names):
+            value, end, filed = self._latest_flow_ttm_with_period(payload, concept)
+            if value is None:
+                continue
+            # Later period end + filed date wins; concept order is deterministic tiebreaker.
+            candidates.append((end, filed, -priority, value))
+
+        if not candidates:
+            return None
+        candidates.sort(reverse=True)
+        return candidates[0][3]
+
+    def _latest_flow_ttm_with_period(
+        self, payload: dict[str, Any], concept_name: str
+    ) -> tuple[float | None, str, str]:
+        annual_values: list[dict[str, Any]] = []
+        quarterly_values: list[dict[str, Any]] = []
+        for row in self._concept_rows(
+            payload,
+            concept_name,
+            unit="USD",
+            namespaces=_NAMESPACE_US_GAAP,
+        ):
+            if row.get("fp") == "FY":
+                annual_values.append(row)
+            elif row.get("fp") in {"Q1", "Q2", "Q3", "Q4"}:
+                quarterly_values.append(row)
+
+        annual_values = self._sorted_rows_desc(annual_values)
+        for row in annual_values:
+            value = self._as_float(row.get("val"))
+            if value is None:
+                continue
+            return value, str(row.get("end") or ""), str(row.get("filed") or "")
+
+        quarterly_values = self._sorted_rows_desc(quarterly_values)
+        if not quarterly_values:
+            return None, "", ""
+
+        total = 0.0
+        count = 0
+        end = str(quarterly_values[0].get("end") or "")
+        filed = str(quarterly_values[0].get("filed") or "")
+        for row in quarterly_values[:4]:
+            value = self._as_float(row.get("val"))
+            if value is None:
+                continue
+            total += value
+            count += 1
+        if count == 0:
+            return None, "", ""
+        return total, end, filed
 
     def _latest_flow_value(
         self,

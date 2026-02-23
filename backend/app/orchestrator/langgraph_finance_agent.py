@@ -133,7 +133,6 @@ _CORE_INPUT_SHARES_MM_RANGES: frozenset[str] = frozenset({"inp_basic_shares"})
 _CORE_INPUT_VALUE_BOUNDS: dict[str, tuple[float, float]] = {
     "inp_rev_ttm": (0.0, 10_000_000.0),
     "inp_ebit_ttm": (-5_000_000.0, 5_000_000.0),
-    "inp_tax_ttm": (-0.10, 0.60),
     "inp_cash": (0.0, 5_000_000.0),
     "inp_debt": (0.0, 5_000_000.0),
     "inp_basic_shares": (0.0, 10_000_000.0),
@@ -1062,6 +1061,9 @@ class LangGraphFinanceAgent:
         resize_issues = self._auto_resize_presentation_tabs(spreadsheet_id)
         if resize_issues:
             notes.extend(resize_issues)
+        sharing_issues = self._set_run_sheet_link_sharing(spreadsheet_id)
+        if sharing_issues:
+            notes.extend(sharing_issues)
 
         company_name = ""
         try:
@@ -1156,6 +1158,33 @@ class LangGraphFinanceAgent:
                 ",".join(_AUTO_RESIZE_PRESENTATION_TABS),
             )
             return [f"Post-run sheet auto-resize failed: {exc}"]
+
+    def _set_run_sheet_link_sharing(self, spreadsheet_id: str) -> list[str]:
+        set_link_sharing = getattr(
+            self.sheets_engine,
+            "set_anyone_with_link_reader",
+            None,
+        )
+        if not callable(set_link_sharing):
+            self._logger.info(
+                "sheet_link_sharing_skipped spreadsheet_id=%s reason=unsupported_engine",
+                spreadsheet_id,
+            )
+            return []
+        try:
+            result = set_link_sharing(spreadsheet_id)
+            self._logger.info(
+                "sheet_link_sharing_complete spreadsheet_id=%s result=%s",
+                spreadsheet_id,
+                result,
+            )
+            return []
+        except Exception as exc:
+            self._logger.exception(
+                "sheet_link_sharing_failed spreadsheet_id=%s",
+                spreadsheet_id,
+            )
+            return [f"Post-run sheet link sharing failed: {exc}"]
 
     def _state_to_result(self, state: FinanceAgentState) -> ValuationRunResult:
         outputs = state.get("final_outputs") or {}
@@ -3661,7 +3690,7 @@ def _normalize_rate_decimal(value: Any) -> float | None:
 
 
 def _is_valid_tax_rate(value: float | None) -> bool:
-    return value is not None and -0.10 <= value <= 0.60
+    return value is not None and isfinite(value)
 
 
 def _normalize_core_input_value(

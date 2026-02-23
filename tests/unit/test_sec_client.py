@@ -117,3 +117,99 @@ def test_sec_client_falls_back_to_us_gaap_when_dei_missing() -> None:
     fundamentals = client.fetch_company_fundamentals("WMT")
 
     assert fundamentals.basic_shares == 4_250_000_000
+
+
+def test_sec_client_prefers_topline_revenue_concept_for_financial_filers() -> None:
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "RevenuesNetOfInterestExpense": {
+                    "units": {
+                        "USD": [
+                            {
+                                "val": 72_229_000_000,
+                                "end": "2025-12-31",
+                                "filed": "2026-02-20",
+                                "form": "10-K",
+                                "fp": "FY",
+                                "fy": 2025,
+                            }
+                        ]
+                    }
+                },
+                "RevenueFromContractWithCustomerExcludingAssessedTax": {
+                    "units": {
+                        "USD": [
+                            {
+                                "val": 41_304_000_000,
+                                "end": "2025-12-31",
+                                "filed": "2026-02-20",
+                                "form": "10-K",
+                                "fp": "FY",
+                                "fy": 2025,
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+    }
+    client = EdgarSecClient(
+        user_agent="finance-research-agent-test/0.1",
+        http_client=_FakeHttpJsonClient(
+            ticker_map=_ticker_map_payload(),
+            companyfacts=companyfacts,
+        ),
+    )
+
+    fundamentals = client.fetch_company_fundamentals("WMT")
+
+    assert fundamentals.revenue_ttm == 72_229_000_000
+
+
+def test_sec_client_revenue_prefers_latest_period_then_priority_tiebreak() -> None:
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "RevenuesNetOfInterestExpense": {
+                    "units": {
+                        "USD": [
+                            {
+                                "val": 95_000_000_000,
+                                "end": "2024-12-31",
+                                "filed": "2025-02-15",
+                                "form": "10-K",
+                                "fp": "FY",
+                                "fy": 2024,
+                            }
+                        ]
+                    }
+                },
+                "Revenues": {
+                    "units": {
+                        "USD": [
+                            {
+                                "val": 120_000_000_000,
+                                "end": "2025-12-31",
+                                "filed": "2026-02-15",
+                                "form": "10-K",
+                                "fp": "FY",
+                                "fy": 2025,
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+    }
+    client = EdgarSecClient(
+        user_agent="finance-research-agent-test/0.1",
+        http_client=_FakeHttpJsonClient(
+            ticker_map=_ticker_map_payload(),
+            companyfacts=companyfacts,
+        ),
+    )
+
+    fundamentals = client.fetch_company_fundamentals("WMT")
+
+    assert fundamentals.revenue_ttm == 120_000_000_000

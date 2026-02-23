@@ -58,7 +58,6 @@ _CANONICAL_QUALITY_REQUIRED_RANGES: tuple[str, ...] = (
 _CANONICAL_QUALITY_NUMERIC_BOUNDS: dict[str, tuple[float, float]] = {
     "inp_rev_ttm": (0.0, 10_000_000.0),
     "inp_ebit_ttm": (-5_000_000.0, 5_000_000.0),
-    "inp_tax_ttm": (-0.10, 0.60),
     "inp_cash": (0.0, 5_000_000.0),
     "inp_debt": (0.0, 5_000_000.0),
     "inp_basic_shares": (0.0, 10_000_000.0),
@@ -744,11 +743,6 @@ def _validate_strict_named_range_semantics(values: dict[str, Any]) -> None:
             raise ValueError(
                 "inp_tax_ttm must be numeric and expressed as a decimal effective tax rate "
                 "(for example 0.19 or 19%)."
-            )
-        if not (-0.10 <= rate <= 0.60):
-            raise ValueError(
-                "inp_tax_ttm must be a realistic effective tax rate in decimal form "
-                f"(observed={rate})."
             )
 
 

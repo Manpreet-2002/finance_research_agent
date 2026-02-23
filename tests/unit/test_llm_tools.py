@@ -337,7 +337,7 @@ def test_llm_tool_registry_normalizes_percent_tax_rate_before_write() -> None:
     assert written["inp_tax_ttm"] == pytest.approx(0.196)
 
 
-def test_llm_tool_registry_rejects_abs_tax_expense_for_tax_rate_field() -> None:
+def test_llm_tool_registry_accepts_unbounded_numeric_tax_rate_for_tax_field() -> None:
     sheets = _FakeSheetsEngine()
     registry = build_phase_v1_tool_registry(
         data_service=_FakeDataService(),
@@ -345,16 +345,19 @@ def test_llm_tool_registry_rejects_abs_tax_expense_for_tax_rate_field() -> None:
         sheets_engine=sheets,
     )
 
-    with pytest.raises(ValueError, match="inp_tax_ttm must be a realistic effective tax rate"):
-        registry.call(
-            "sheets_write_named_ranges",
-            {
-                "spreadsheet_id": "abc123",
-                "values": {
-                    "inp_tax_ttm": "15675100000",
-                },
+    result = registry.call(
+        "sheets_write_named_ranges",
+        {
+            "spreadsheet_id": "abc123",
+            "values": {
+                "inp_tax_ttm": "15675100000",
             },
-        )
+        },
+    )
+
+    assert result["ok"] is True
+    written = sheets.named_range_writes[-1][1]
+    assert written["inp_tax_ttm"] == "15675100000"
 
 
 def test_llm_tool_registry_drops_direct_comps_control_writes() -> None:

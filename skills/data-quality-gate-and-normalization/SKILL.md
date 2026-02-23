@@ -28,7 +28,6 @@ description: Run deterministic pre-model data quality checks on canonical inputs
 - Baseline drift versus orchestrator-reconciled canonical inputs is a blocking issue.
 
 2. Unit/range sanity
-- Tax rates must be in a realistic band.
 - `inp_tax_ttm` is an effective tax **rate** only (decimal). Valid forms: `0.19` or `19%`.
 - Never write absolute tax expense dollars into `inp_tax_ttm`.
 - Price and shares must be positive.

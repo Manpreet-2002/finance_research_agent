@@ -630,6 +630,44 @@ def test_collect_validation_gate_issues_aggregates_contracts() -> None:
     ]
 
 
+class _SharingEnabledSheets:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def set_anyone_with_link_reader(self, spreadsheet_id: str) -> dict[str, object]:
+        self.calls.append(spreadsheet_id)
+        return {"status": "created"}
+
+
+class _SharingFailingSheets:
+    def set_anyone_with_link_reader(self, spreadsheet_id: str) -> dict[str, object]:
+        del spreadsheet_id
+        raise RuntimeError("permission denied")
+
+
+def test_set_run_sheet_link_sharing_invokes_engine_hook_when_available() -> None:
+    agent = object.__new__(LangGraphFinanceAgent)
+    sheets = _SharingEnabledSheets()
+    agent.sheets_engine = sheets
+    agent._logger = logging.getLogger("test.orchestrator.guardrails")
+
+    issues = agent._set_run_sheet_link_sharing("sheet_123")
+
+    assert issues == []
+    assert sheets.calls == ["sheet_123"]
+
+
+def test_set_run_sheet_link_sharing_reports_nonfatal_issue_on_failure() -> None:
+    agent = object.__new__(LangGraphFinanceAgent)
+    agent.sheets_engine = _SharingFailingSheets()
+    agent._logger = logging.getLogger("test.orchestrator.guardrails")
+
+    issues = agent._set_run_sheet_link_sharing("sheet_123")
+
+    assert len(issues) == 1
+    assert "Post-run sheet link sharing failed" in issues[0]
+
+
 class _MalformedSourcesSheets:
     def read_named_ranges(
         self,

@@ -390,6 +390,83 @@ class GoogleSheetsEngine(SheetsEngine):
             .execute()
         )
 
+    def set_anyone_with_link_reader(self, spreadsheet_id: str) -> dict[str, object]:
+        drive = self._drive_service()
+        permissions_api = drive.permissions()
+        existing_permissions = (
+            permissions_api.list(
+                fileId=spreadsheet_id,
+                fields="permissions(id,type,role,allowFileDiscovery)",
+                supportsAllDrives=True,
+            ).execute()
+        )
+        for permission in existing_permissions.get("permissions", []):
+            if permission.get("type") != "anyone":
+                continue
+            permission_id = str(permission.get("id") or "").strip()
+            if not permission_id:
+                continue
+            role = str(permission.get("role") or "").strip().lower()
+            allow_file_discovery = bool(permission.get("allowFileDiscovery"))
+            if role == "reader" and not allow_file_discovery:
+                self._logger.info(
+                    "sheet_link_sharing_unchanged spreadsheet_id=%s permission_id=%s",
+                    spreadsheet_id,
+                    permission_id,
+                )
+                return {
+                    "status": "unchanged",
+                    "permission_id": permission_id,
+                    "role": "reader",
+                    "allow_file_discovery": False,
+                }
+            updated = (
+                permissions_api.update(
+                    fileId=spreadsheet_id,
+                    permissionId=permission_id,
+                    body={"role": "reader", "allowFileDiscovery": False},
+                    fields="id,role,allowFileDiscovery",
+                    supportsAllDrives=True,
+                ).execute()
+            )
+            updated_permission_id = str(updated.get("id") or permission_id).strip()
+            self._logger.info(
+                "sheet_link_sharing_updated spreadsheet_id=%s permission_id=%s",
+                spreadsheet_id,
+                updated_permission_id,
+            )
+            return {
+                "status": "updated",
+                "permission_id": updated_permission_id,
+                "role": str(updated.get("role") or "reader"),
+                "allow_file_discovery": bool(updated.get("allowFileDiscovery")),
+            }
+
+        created = (
+            permissions_api.create(
+                fileId=spreadsheet_id,
+                body={
+                    "type": "anyone",
+                    "role": "reader",
+                    "allowFileDiscovery": False,
+                },
+                fields="id,role,allowFileDiscovery",
+                supportsAllDrives=True,
+            ).execute()
+        )
+        created_permission_id = str(created.get("id") or "").strip()
+        self._logger.info(
+            "sheet_link_sharing_created spreadsheet_id=%s permission_id=%s",
+            spreadsheet_id,
+            created_permission_id,
+        )
+        return {
+            "status": "created",
+            "permission_id": created_permission_id,
+            "role": str(created.get("role") or "reader"),
+            "allow_file_discovery": bool(created.get("allowFileDiscovery")),
+        }
+
     def auto_resize_tabs(
         self,
         spreadsheet_id: str,
