@@ -1,358 +1,353 @@
-# US Stocks Valuation Agent Platform (2026)
-## PRD + System Design (Excel Graph API as the Excel Engine)
+# US Stocks Finance Research Agent Platform (2026)
+## PRD + System Design (Template-first Google Sheets engine)
 
-> **One-liner:** Enter a US ticker → generate a **bank-style valuation workbook (Comps + DCF)** and a **professional company memo**, while writing a **step-by-step agent Logbook inside Excel** (actions, assumptions, sources, and sanity checks).
-
-This document is a **refactor** of the earlier “Local Sandbox → GCP Deployment” agent-orchestration plan, with one major upgrade: the workbook is now operated remotely as a deterministic compute/graph via **Microsoft Graph Excel APIs** (sessions + write ranges + calculate + read outputs).  
+> One-liner: Enter a US ticker -> generate a top-quality Google Sheets valuation workbook and a high-quality investment memo, with full assumption/story auditability logged inside the sheet.
 
 ---
 
-## 1) What success looks like
+## 1) Product intent
 
-### 1.1 User success
-Within minutes, the user gets:
-- **Excel model** that looks and behaves like a sell-side / IB workbook:
-  - clean Inputs → Calculations → Outputs separation
-  - DCF (FCFF) with sensitivities and charts
-  - Comps screen and valuation summary
-  - consistent formatting and print-ready layout
-- **Company memo** (DOCX/MD/PDF) that:
-  - references the model outputs
-  - includes a clear thesis + risks + key drivers
-  - maintains provenance (“where did this number come from?”)
-- **Excel Logbook sheet**:
-  - a readable, timestamped audit trail of the agent’s decisions
-  - includes citations (SEC endpoints, market-data endpoints, or explicit assumptions)
+### 1.1 Core objective
+Build a multi-turn finance research agent that starts from a semi pre-populated Google Sheets template, gathers and validates evidence, reasons through assumptions, performs scenario-based DCF in Sheets, and delivers:
+- a professional valuation workbook (with transparent assumptions, scenarios, sensitivities, and competitive analysis), and
+- a professional investment memo that ties valuation outputs to business narrative (Damodaran-style story-to-numbers coherence).
 
-### 1.2 Engineering success (hiring signal)
-- **Deterministic compute layer**: valuation math runs in Excel, not “LLM arithmetic.”
-- **Harnessed agent**: tool use is schema-validated, rate-limited, and budgeted.
-- **Eval suite**: regression + invariants + peer-set sanity checks.
-- **Production readiness**: traceability, retries, cost controls, and multi-user isolation.
+### 1.2 Hard requirements
+- Spreadsheet template is the starting point (copy from canonical data-service template each run).
+- Agent must run a 3-part DCF:
+  - pessimistic
+  - neutral/base
+  - optimistic
+- Agent must decide scenario assumptions and scenario probabilities/weights.
+- Agent must write rationale for assumptions, story, and valuation in-sheet.
+- Agent must ask user for missing or high-impact data when needed.
+- Agent must not perform math transformations outside Google Sheets formulas.
+- Agent can write formulas, read outputs, and iterate assumptions across turns.
 
----
+### 1.3 Quality bar
+Think like a top investment banker:
+- broad evidence collection (filings, fundamentals, guidance, macro, peers, catalysts)
+- clear assumptions linked to evidence
+- valuation sensitivity and downside framing
+- competitive context and market structure analysis
+- internally consistent narrative and model outputs
 
-## 2) Product scope (US stocks, V1)
-
-### Inputs
-- `ticker` (NASDAQ/NYSE listed)
-- optional overrides:
-  - risk-free rate source (default: US Treasury / FRED)
-  - ERP / beta / capital structure assumptions
-  - forecast horizon (e.g., 5–10y)
-  - margin trajectory constraints
-  - terminal growth bounds
-  - comps universe filters
-
-### Outputs
-- **Excel workbook** (stored in SharePoint/OneDrive) with:
-  - Dashboard
-  - Historical financials
-  - Assumptions
-  - DCF
-  - Comps
-  - Sensitivities + charts
-  - **Logbook**
-- **Memo** (stored in GCS): investment note-style narrative with citations
-
-### Out of scope (V1)
-- Trading/broker integration (V2)
-- Derivatives/options valuation
-- Intraday strategies
+### 1.4 Implementation references (repo-local)
+- Tool stack implementation: `docs/architecture/v1-tool-stack-implementation-2026-02-15.md`
+- Skill pack implementation: `docs/architecture/v1-skill-pack-implementation-2026-02-15.md`
+- Orchestration implementation: `docs/architecture/v1-langgraph-orchestration-2026-02-15.md`
+- Phase plan and scope: `phase_v1.md`
 
 ---
 
-## 3) ExcelGraph Engine (what changed)
+## 2) Design principles from latest OpenAI + Anthropic agent guidance
 
-### 3.1 Why Excel as the engine
-Finance users trust Excel. You get:
-- familiar, inspectable formulas
-- auditable inputs/outputs
-- native charting and a “deliverable” artifact
+### 2.1 Agent safety and control
+- Use strict structured tool contracts (JSON schema, minimal free-form).
+- Keep untrusted data out of privileged instruction channels.
+- Apply least-privilege tool permissions and explicit approvals for write/destructive operations.
+- Restrict high-risk tool actions (sheet mutations, external posting, file writes) through policy gates.
 
-### 3.2 How Graph Excel APIs are used
-You treat the workbook as a **remote computation graph**:
-1) **Copy template workbook** to a run-scoped location (SharePoint drive folder)
-2) **Create a workbook session** (Graph) for stable, performant edits
-3) **Write inputs** to named ranges / tables in batches
-4) **Trigger calculation** (full recalc)
-5) **Read outputs** from named ranges/tables
-6) **Write the Logbook** rows (what the agent did + why + sources)
-7) Export:
-   - workbook link
-   - optional chart images (base64) for UI preview
+### 2.2 Reliability
+- Use deterministic workflow phases with typed intermediate artifacts.
+- Require citations on factual and numeric claims.
+- Separate reasoning decisions from numerical computation:
+  - reasoning in model
+  - math in spreadsheet formulas only
 
-Microsoft recommends **efficient session usage** and batching to improve performance and reliability. (Graph “Excel API best practices.”)
+### 2.3 Observability and improvement
+- Capture full run traces (plan, tool calls, outputs, assumption changes).
+- Run trace graders and evals for regressions.
+- Track failure classes (wrong tool, stale data, assumption drift, missing citations, template contract break).
 
 ---
 
-## 4) Users, use cases, stories
+## 3) Scope
 
-### Personas
-- **Retail Pro / serious investor**: wants a consistent first-pass valuation and thesis.
-- **Junior analyst/associate**: wants a model + memo quickly, then edits assumptions.
-- **PM / IC reviewer**: wants transparency into assumptions and levers.
-- **Ops/Compliance reviewer**: wants audit trail and provenance.
+### 3.1 In scope (V1)
+- US listed equities (single ticker per run).
+- Google Sheets as remote compute and audit artifact.
+- Multi-turn chat workflow with clarifying questions.
+- 3-scenario DCF with weighted expected value.
+- Sensitivity analysis and competitive analysis.
+- Memo generation with citations and explicit scenario framing.
 
-### User stories
-- **One-click valuation**: enter ticker → model + memo generated.
-- **Scenario levers**: change WACC/terminal growth/margins → re-run and see deltas.
-- **Assumption explainability**: open Logbook → see rationale & sources.
-- **Comps control**: user sets peer selection rules → model updates comps and multiples.
-- **Cited memo**: numeric claims in memo reference SEC or market-data sources.
-
----
-
-## 5) Data sources & tool options (US-optimized)
-
-### 5.1 Official/free backbone
-**SEC EDGAR APIs (data.sec.gov)**  
-Use for: filings metadata, submissions, and extracted XBRL facts. SEC provides official guidance on EDGAR APIs, including fair-access limits (commonly cited: 10 requests/second) and recommends efficient scripting.  
-
-**Rates & macro**
-- **FRED API** (St. Louis Fed): risk-free proxies, macro series (optional)
-
-### 5.2 Market data & news options (practical V1 choices)
-Pick one provider for quotes/fundamentals; optionally add a news feed.
-
-**Option A — Finnhub (recommended V1 for fast build)**
-- Provides real-time market data, company fundamentals, and news endpoints.
-- Pricing pages indicate a paid “stock API market data” plan around **$49.99/month**; their pricing page also lists rate limits per minute for market and fundamentals tiers (exact limits vary by plan/market).  
-- Has dedicated market-news endpoints.
-
-**Option B — Alpha Vantage (cheap starter, tight free limits)**
-- Offers many endpoints free; premium is required for higher throughput.
-- Their premium page notes a free usage tier with low daily request allowance (example shown: **25 requests/day**), with premium plans for higher limits.
-
-**Option C — Polygon (now under Massive)**
-- Polygon.io appears integrated into the **Massive** brand/site; treat pricing as provider-defined and verify plan entitlements before committing.
-- If you need high-quality intraday/historical coverage, evaluate Massive/Polygon plans carefully for your target usage.
-
-### 5.3 Web search
-Use web search for:
-- catalysts (earnings, product launches, regulation)
-- competitor landscape
-- risk headlines
-
-Production guardrails:
-- source allowlist for memo citations
-- require citations for any factual/non-trivial numeric claims
+### 3.2 Out of scope (V1)
+- Intraday trading and execution.
+- Derivatives/options pricing.
+- Portfolio optimization across many tickers.
 
 ---
 
-## 6) System design
+## 4) User inputs and outputs
 
-### 6.1 High-level architecture (Mermaid)
-```mermaid
-flowchart LR
-  U[User] --> UI[Next.js Web App]
+### 4.1 Input contract
+Required:
+- `ticker`
 
-  UI -->|POST /run| API[FastAPI Orchestrator]
-  UI <-->|SSE/WebSocket stream| API
+Optional:
+- mandate style (value, growth, quality, turnaround)
+- horizon
+- user-provided assumptions
+- explicit constraints (for example conservative terminal growth cap)
 
-  API --> LLM[LLM Provider\n(OpenAI/Anthropic)]
-  API --> Tools[Tool Layer\n(SEC, Market Data, News, Web Search)]
-  API --> Excel[ExcelGraph Engine\n(Microsoft Graph Excel API)]
-  API --> Store[(Storage\nGCS + DB)]
-  API --> Obs[Observability\nLogs/Traces/Metrics]
-
-  Excel -->|Workbook stored| SP[SharePoint/OneDrive]
-```
-
-### 6.2 Key components
-**Frontend (Next.js)**
-- chat/task UI (ticker input + controls)
-- progress streaming (agent plan + tool actions)
-- workbook/memo links + chart previews
-
-**FastAPI orchestrator**
-- “agent harness”: budgets, loop detection, schema validation
-- async execution using Cloud Tasks/PubSub (GCP)
-- returns streaming updates to UI
-
-**Tool layer**
-- SEC fetcher (submissions + company facts + filings)
-- market-data fetcher (Finnhub/AlphaVantage/Massive)
-- web search + news fetcher
-- canonicalizer: maps raw fields into the workbook’s tables
-
-**ExcelGraph engine**
-- copies template workbook
-- opens session
-- writes inputs/historicals in batch
-- triggers recalc
-- reads outputs
-- appends logbook rows
-- exports workbook link + optional chart images
-
-**Storage**
-- GCS stores memo artifacts + raw data snapshots + eval reports
-- DB stores run metadata, user workspaces, budget counters, pointers to workbook drive items
+### 4.2 Output contract
+- Google Sheet run artifact (template copy) containing:
+  - Inputs and assumption logs
+  - historical and forward operating data
+  - 3-scenario DCF + weighted valuation
+  - sensitivity tables/charts
+  - competitive analysis tables
+  - story/risk register
+  - run logbook
+- Investment memo (markdown/doc/pdf) with:
+  - thesis
+  - scenario narrative
+  - weighted valuation conclusion
+  - key risks and catalysts
+  - citations
 
 ---
 
-## 7) Agent workflow (how it’s built)
+## 5) Template-first Sheets architecture
 
-### 7.1 Recommended orchestration pattern (V1)
-Keep it simple:
-- **One agent** with:
-  - planning step
-  - tool calls (structured)
-  - ExcelGraph operation
-  - memo generation
-  - review + sanity checks
+### 5.1 Run initialization
+1. Copy semi pre-populated template from data-service canonical template.
+2. Register run metadata (`run_id`, `template_version`, `ticker`, timestamps).
+3. Validate required named ranges/tabs exist.
 
-Later (V2+), add sub-agents:
-- Data agent
-- Modeling agent (Excel-only operations)
-- Memo agent
-- Reviewer agent
+### 5.2 Spreadsheet-as-calculator policy
+- Agent writes inputs and formulas with `USER_ENTERED`.
+- Agent reads computed outputs from named output ranges.
+- Agent never computes final valuation arithmetic in model-side code.
+- Any derived numeric value shown to users/memo must be read from Sheets outputs.
 
-### 7.2 Sequence diagram (DCF run)
-```mermaid
-sequenceDiagram
-  participant UI as Next.js UI
-  participant API as FastAPI
-  participant Tools as SEC/Market/News
-  participant Excel as Graph Excel
-  participant LLM as LLM
-
-  UI->>API: RunValuation(ticker)
-  API->>LLM: Plan + tool calls
-  LLM-->>API: tool calls (SEC + market + news)
-  API->>Tools: Fetch + normalize data
-  Tools-->>API: canonical financial dataset
-
-  API->>Excel: Copy template workbook (new run)
-  API->>Excel: createSession + batch write inputs
-  API->>Excel: calculate (full recalc)
-  Excel-->>API: output ranges (EV, equity value, per-share)
-
-  API->>Excel: append Logbook rows (sources + rationale)
-  API->>LLM: Generate memo referencing outputs
-  LLM-->>API: memo draft
-  API-->>UI: stream progress + return links
-```
+### 5.3 Suggested tab contract
+- `Inputs`
+- `Historicals`
+- `Assumptions`
+- `Scenario_Pessimistic`
+- `Scenario_Neutral`
+- `Scenario_Optimistic`
+- `Scenario_Weights`
+- `DCF_Output`
+- `Sensitivity`
+- `Comps`
+- `Story_Risk_Catalyst`
+- `Assumption_Journal`
+- `Action_Ledger`
 
 ---
 
-## 8) Excel template contract (agent ↔ workbook interface)
+## 6) Agent workflow (multi-turn)
 
-### 8.1 Workbook is an API
-Define stable named ranges/tables. Examples:
+### 6.1 Phase A: mandate + gaps
+- Capture user objective and constraints.
+- Detect missing high-impact inputs.
+- Ask focused follow-up questions when needed.
 
-**Inputs**
-- `IN_Ticker`, `IN_Price`
-- `IN_RiskFreeRate`, `IN_ERP`, `IN_Beta`
-- `IN_TerminalGrowth`, `IN_ForecastYears`
-- `IN_RevenueGrowth_1toN`, `IN_EBITMargin_1toN`
-- `IN_TaxRate`, `IN_SalesToCapital` (or reinvestment rate)
+### 6.2 Phase B: evidence collection
+Gather and normalize:
+- SEC filings (10-K/10-Q/8-K, XBRL facts)
+- market/fundamental data
+- estimates/guidance/transcripts (if available)
+- macro/rates data
+- industry/peer context and recent catalysts
 
-**Outputs**
-- `OUT_WACC`, `OUT_PV_FCFF`, `OUT_TerminalValue`
-- `OUT_EquityValue`, `OUT_ValuePerShare`
-- `OUT_Sensitivity_Table`, `OUT_Comps_Table`
+### 6.3 Phase C: data quality checks
+- Resolve unit mismatches (millions vs billions).
+- Verify period consistency (FY/TTM/LTM).
+- Flag stale or conflicting data.
+- Write source-attributed raw facts to sheet.
 
-**Logbook**
-- Table `LOG_Entries`: timestamp, step, action, assumptions, sources, notes
+### 6.4 Phase D: scenario design + assumption reasoning
+For each scenario (pessimistic/base/optimistic), decide and log:
+- revenue growth path
+- margin trajectory
+- reinvestment/capital intensity
+- WACC components and capital structure assumptions
+- terminal growth constraints
 
-### 8.2 Multi-user isolation
-One run = one workbook copy.  
-Never let two users share the same workbook instance.
+### 6.5 Phase E: valuation execution in Sheets
+- Populate scenario inputs.
+- Trigger formula recalculation.
+- Read DCF outputs for each scenario.
+- Compute weighted valuation through sheet formulas (`Scenario_Weights` + `DCF_Output`).
 
----
+### 6.6 Phase F: sensitivity + competitive analysis
+- Sensitivity grids (for example WACC x terminal growth, margin x growth).
+- Peer set construction and sanity checks.
+- Relative valuation context (multiples and narrative consistency).
 
-## 9) Evals (what to build)
+### 6.7 Phase G: story synthesis + memo
+- Build thesis linked to operating drivers.
+- Tie scenario assumptions to qualitative narrative.
+- Summarize upside/downside conditions and catalysts.
+- Produce memo with citation mapping to evidence and sheet outputs.
 
-### 9.1 Eval categories
-**Data correctness**
-- revenues from SEC facts match within tolerance
-- share count logic is traceable (SEC or provider)
-
-**Model sanity (Excel invariants)**
-- PV identities hold
-- WACC in bounds (configurable)
-- TV logic valid (terminal growth constraints)
-
-**Comps quality**
-- peer set sector/industry alignment
-- cap-band rules honored
-- exclude obvious mismatches
-
-**Memo quality**
-- citations for numeric claims
-- section completeness
-- hallucination checks via spot verification
-
-**Tool behavior**
-- loop detection (repeated tool calls)
-- budget compliance (tokens + calls + time)
-
-### 9.2 Eval operations
-- 30–100 ticker benchmark set across sectors
-- cache SEC responses
-- run cheap checks on PR; full nightly run
-- fail CI if invariants break
+### 6.8 Phase H: final validation
+- hard checks pass
+- citation coverage threshold met
+- output completeness verified
+- publish sheet + memo links
 
 ---
 
-## 10) GCP deployment plan (production)
+## 7) Tooling stack
 
-**Core services**
-- Cloud Run (UI + API)
-- Cloud Tasks / PubSub (async runs)
-- GCS (artifacts)
-- Cloud SQL (metadata)
-- Secret Manager
-- Cloud Logging/Trace/Monitoring
+### 7.1 Mandatory tools
+- Google Sheets API tool:
+  - copy template
+  - write ranges/formulas
+  - read outputs
+  - append logs
+- SEC EDGAR tool:
+  - filings metadata
+  - submissions/companyfacts
+  - filing text/sections
+- Market/fundamentals provider (Finnhub or equivalent):
+  - price, market cap, shares, statements, estimates
+- Web/news search tool:
+  - catalysts
+  - controversies
+  - competitive developments
 
-**Security**
-- Microsoft Entra ID app for Graph OAuth (confidential client)
-- least-privilege drive/site permissions
-- per-user workspace ACLs
-- store provider/LLM keys in Secret Manager
+### 7.2 Recommended additional tools
+- FRED/Treasury rates tool (risk-free, macro context).
+- Earnings call transcripts tool.
+- Corporate actions tool (splits/buybacks/dividends history).
+- Sector/industry classification tool (GICS/NAICS mapping).
+- Source reliability scorer / contradiction checker.
+- Document extraction tool (tables from filings/pdfs).
 
----
-
-## 11) Cost structure (what drives spend)
-
-### Major drivers
-1) **LLM tokens** (budget per run; log usage per tool step)
-2) **Market data provider** subscription and rate limits
-3) **Microsoft 365 / SharePoint** (workbook storage & Graph access)
-4) **GCP compute/storage**
-
-### Concrete “starting point” costs (developer-friendly)
-- **SEC EDGAR APIs**: free (respect fair-access limits; efficient scripting)
-- **Finnhub**: pricing pages show stock market data plan around **$49.99/month** and list per-minute call caps for market/fundamental data
-- **Alpha Vantage**: free tier has low daily request allowance; premium plans increase throughput
-- **Cloud Run**: can scale-to-zero; keep first version lightweight
-
----
-
-## 12) Milestones (doable + shippable)
-
-1) **Hello ExcelGraph**
-- Graph auth → copy template workbook → session → write → calculate → read → logbook append
-
-2) **DCF V1**
-- SEC ingestion + market price → populate workbook → compute outputs → export workbook
-
-3) **Comps + memo**
-- peer selection rules → comps table → memo with citations
-
-4) **Evals + regression**
-- benchmark suite + CI gate + nightly full runs
-
-5) **Production harness**
-- budgets + retries + loop detection + monitoring dashboards
+### 7.3 Tool interface requirements
+- Strict JSON schemas for all function calls.
+- Minimal and explicit parameter sets.
+- `tool_choice` controls for critical steps.
+- Tool output must include provenance metadata:
+  - source
+  - timestamp
+  - endpoint/document id
 
 ---
 
-## 13) What to cite in your repo README
-- Microsoft Graph Excel best practices (sessions, batching)
-- SEC EDGAR API documentation & fair-access limits
-- OpenAI agent-building guides
-- Anthropic posts on harnesses/evals
-- Finnhub pricing + docs endpoints for news/market data
+## 8) Guardrails and policy controls
 
+### 8.1 Safety guardrails
+- Prompt-injection mitigation:
+  - untrusted text is treated as data, not instructions
+- PII/privacy redaction in logs and prompts.
+- Approval gate for high-impact writes/exports where needed.
+
+### 8.2 Financial-quality guardrails
+- `WACC > g` hard fail.
+- Scenario weights sum to 100% hard fail.
+- Weighted valuation must be formula-linked to scenario outputs hard fail.
+- Diluted share sanity checks and bridge consistency.
+- Memo numeric claims must map to sheet output range and source.
+
+### 8.3 Citation requirements
+- Every non-trivial numeric claim requires citation.
+- Every major qualitative claim (thesis/risk/catalyst) requires source or explicit labeled judgment.
+
+---
+
+## 9) Logging and traceability
+
+### 9.1 In-sheet logs
+- `Action_Ledger` rows:
+  - step
+  - phase
+  - tool
+  - action
+  - target range
+  - short input/output summary
+  - citation ids
+- `Assumption_Journal` rows:
+  - assumption key
+  - scenario
+  - value/unit
+  - rationale
+  - confidence
+  - source links
+
+### 9.2 System traces
+Store run trace with:
+- prompts/instructions version ids
+- tool call payloads and responses
+- sheet mutations
+- validation results
+- token/cost/time stats
+
+---
+
+## 10) Evaluation strategy
+
+### 10.1 Automated checks
+- contract tests for named ranges and required tabs
+- no-offsheet-math check for final outputs
+- scenario completeness and weights check
+- citation coverage check
+
+### 10.2 Quality evals
+- rubric scoring for assumption quality and narrative coherence
+- regression set across sectors/market regimes
+- trace graders for tool-use correctness and policy compliance
+
+### 10.3 Release gates
+- fail if any hard financial invariant fails
+- fail if missing citations above threshold
+- fail if template contract drifts
+
+---
+
+## 11) Implementation roadmap
+
+### Phase 1: foundation
+- lock template contract and named ranges
+- implement sheets engine operations + run copy lifecycle
+- implement SEC + market + rates adapters
+
+### Phase 2: reasoning loop
+- multi-turn orchestrator
+- scenario assumption generator with strict schemas
+- in-sheet logging wiring
+
+### Phase 3: valuation and narrative
+- 3-scenario DCF execution + weighted output tab
+- sensitivity and comps modules
+- memo generation with citation mapping
+
+### Phase 4: hardening
+- trace storage + eval pipeline
+- guardrails + approvals + retry policies
+- benchmark suite and CI gates
+
+---
+
+## 12) Alignment notes for this repository
+This PRD supersedes earlier single-pass DCF framing by making these mandatory:
+- multi-turn clarification and assumption iteration
+- scenario weighting as first-class output
+- story-to-valuation coherence checks
+- no model-side math transformations
+- richer tooling for competitive and catalyst research
+
+---
+
+## 13) Reference docs (latest reviewed)
+
+### OpenAI
+- Agents guide: https://platform.openai.com/docs/guides/agents
+- Safety in building agents: https://platform.openai.com/docs/guides/agent-builder-safety
+- Function calling: https://platform.openai.com/docs/guides/function-calling
+- Structured outputs: https://platform.openai.com/docs/guides/structured-outputs
+- Using tools: https://platform.openai.com/docs/guides/tools
+- Agents SDK: https://platform.openai.com/docs/guides/agents-sdk
+- Agent evals: https://platform.openai.com/docs/guides/agent-evals
+- Trace grading: https://platform.openai.com/docs/guides/trace-grading
+
+### Anthropic
+- Building effective agents: https://www.anthropic.com/engineering/building-effective-agents
+- Tool use overview: https://docs.claude.com/en/docs/agents-and-tools/tool-use/overview
+- Claude Code SDK agent permissions: https://docs.claude.com/en/docs/claude-code/sdk/sdk-permissions

@@ -7,6 +7,23 @@ Codex's primary goal in this repository is to help build a high-quality, investm
 
 This mission is authoritative for implementation decisions, prioritization, and quality bars.
 
+## V2 goal (authoritative)
+For V2, after the agent completes the spreadsheet workflow for a ticker, it must generate a local 3-5 page investment memo document that includes:
+- revenue mix
+- product mix
+- company divisions and business segments
+- management quality
+- sectoral analysis
+- detailed comps and peer analysis
+- opportunities and risks
+- descriptive company story
+- explicit mapping from story to DCF and sensitivity outputs
+- informative, high-quality infographics
+- high-quality investment-banking-style writing
+
+First order of business for V2:
+- evaluate infographic creation tools and identify the stack that best fits this use case.
+
 ## Project Structure & Module Organization
 This repository follows the V1 valuation-agent layout:
 - `frontend/`: Next.js UI scaffold.
@@ -38,6 +55,7 @@ General repo commands:
 ## Smoke test for multi turn agent command
 - The ORCL (ticker name) smoke test command is:
   `PYTHONPATH=. uv run scripts/smoke_test_langgraph_runner.py --ticker ORCL --env-file .env`
+- When asked to run a smoke test, monitor the active run to completion and do not restart it as "stalled" unless the configured LLM timeout has actually been hit.
 
 ## Coding Style & Naming Conventions
 - Prefer descriptive domain names (`sheets_engine`, `valuation_run`, `logbook_entry`).

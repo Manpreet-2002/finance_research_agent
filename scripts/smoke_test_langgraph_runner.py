@@ -14,6 +14,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backend.app.core.settings import load_settings
+from backend.app.memo.post_run_memo import PostRunMemoService
 from backend.app.orchestrator.valuation_runner import ValuationRunner
 from backend.app.schemas.valuation_run import ValuationRunRequest
 from scripts.smoke_test_common import load_env_file
@@ -23,6 +24,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="LangGraph valuation runner smoke test")
     parser.add_argument("--ticker", default="AAPL", help="Ticker symbol")
     parser.add_argument("--env-file", default=".env", help="Env file path")
+    parser.add_argument(
+        "--with-memo",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Generate local post-run investment memo (default: true). Use --no-with-memo to skip.",
+    )
     args = parser.parse_args()
 
     load_env_file(args.env_file)
@@ -67,7 +74,35 @@ def main() -> int:
         print(f"FAIL: {exc}")
         return 1
 
-    print("PASS" if result.status == "COMPLETED" else "FAIL")
+    if (
+        runner.llm_client is None
+        or runner.sheets_engine is None
+        or runner.data_service is None
+        or runner.research_service is None
+    ):
+        print("FAIL: Runner dependencies missing for post-run memo stage.")
+        return 1
+
+    memo_service = PostRunMemoService(
+        settings=settings,
+        llm_client=runner.llm_client,
+        sheets_engine=runner.sheets_engine,
+        data_service=runner.data_service,
+        research_service=runner.research_service,
+    )
+    memo_result = memo_service.generate(
+        request=request,
+        result=result,
+        with_memo=bool(args.with_memo),
+    )
+
+    memo_ok = (
+        memo_result.status == "COMPLETED"
+        if args.with_memo
+        else memo_result.status in {"COMPLETED", "SKIPPED"}
+    )
+    run_ok = result.status == "COMPLETED"
+    print("PASS" if run_ok and memo_ok else "FAIL")
     print(f"Run ID: {result.run_id}")
     print(f"Ticker: {request.ticker}")
     print(f"Status: {result.status}")
@@ -78,12 +113,25 @@ def main() -> int:
     print(f"Phases executed: {', '.join(result.phases_executed)}")
     print(f"Citations summary: {result.citations_summary}")
     print(f"Memo chars: {len(result.memo_markdown)}")
+    print(f"With memo: {args.with_memo}")
+    print(f"Wrapper status: {memo_result.status}")
+    print(f"Memo manifest: {memo_result.manifest_path}")
+    if memo_result.pdf_path:
+        print(f"Memo PDF: {memo_result.pdf_path}")
+    if memo_result.html_path:
+        print(f"Memo HTML: {memo_result.html_path}")
+    if memo_result.chart_manifest_path:
+        print(f"Charts manifest: {memo_result.chart_manifest_path}")
 
     if result.notes:
         print("Notes:")
         print(result.notes)
+    if memo_result.notes:
+        print("Memo notes:")
+        for note in memo_result.notes:
+            print(f"- {note}")
 
-    return 0 if result.status == "COMPLETED" else 1
+    return 0 if run_ok and memo_ok else 1
 
 
 if __name__ == "__main__":

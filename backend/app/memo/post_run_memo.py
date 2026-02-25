@@ -22,17 +22,100 @@ from ..tools.research_service import ResearchService
 _JSON_DECODER = json.JSONDecoder()
 _RUN_TS_RE = re.compile(r"(\d{8}T\d{6}Z)")
 
-_DEFAULT_MIN_REQUIRED_CHARTS = 6
+_HARD_MIN_REQUIRED_CHARTS = 4
+_TARGET_INFOGRAPHIC_COUNT = 6
+_MAX_INFOGRAPHIC_REPAIR_ATTEMPTS = 3
+_MIN_ANALYTICAL_QUALITY_SCORE = 75.0
 _DEFAULT_CHART_IDS: tuple[str, ...] = (
     "dcf_outcomes_vs_market",
     "scenario_gap_vs_market",
     "scenario_weights",
+    "sensitivity_heatmap",
     "comps_ev_ebit",
     "comps_ev_sales",
-    "sensitivity_heatmap",
-    "peer_market_cap",
     "peer_revenue_ebit",
+    "peer_market_cap",
 )
+
+_CHART_BUCKETS: dict[str, tuple[str, ...]] = {
+    "dcf_outcomes_vs_market": ("valuation", "scenario_framing"),
+    "scenario_gap_vs_market": ("valuation", "risk"),
+    "scenario_weights": ("valuation", "risk"),
+    "sensitivity_heatmap": ("sensitivity", "risk"),
+    "comps_ev_ebit": ("relative_valuation", "peer_context"),
+    "comps_ev_sales": ("relative_valuation", "peer_context"),
+    "peer_market_cap": ("scale_mix", "peer_context"),
+    "peer_revenue_ebit": ("operating_quality", "peer_context", "management_quality"),
+}
+
+_MANDATORY_COVERAGE_BUCKETS: tuple[str, ...] = ("valuation", "sensitivity")
+
+_CHART_QUALITY_BASE: dict[str, dict[str, float]] = {
+    "dcf_outcomes_vs_market": {
+        "decision_usefulness": 18.0,
+        "valuation_linkage": 20.0,
+        "comparative_context": 14.0,
+        "signal_density": 14.0,
+        "evidence_strength": 12.0,
+        "coverage_contribution": 14.0,
+    },
+    "scenario_gap_vs_market": {
+        "decision_usefulness": 16.0,
+        "valuation_linkage": 18.0,
+        "comparative_context": 12.0,
+        "signal_density": 13.0,
+        "evidence_strength": 11.0,
+        "coverage_contribution": 12.0,
+    },
+    "scenario_weights": {
+        "decision_usefulness": 14.0,
+        "valuation_linkage": 15.0,
+        "comparative_context": 8.0,
+        "signal_density": 11.0,
+        "evidence_strength": 10.0,
+        "coverage_contribution": 11.0,
+    },
+    "sensitivity_heatmap": {
+        "decision_usefulness": 17.0,
+        "valuation_linkage": 20.0,
+        "comparative_context": 13.0,
+        "signal_density": 15.0,
+        "evidence_strength": 11.0,
+        "coverage_contribution": 14.0,
+    },
+    "comps_ev_ebit": {
+        "decision_usefulness": 18.0,
+        "valuation_linkage": 17.0,
+        "comparative_context": 18.0,
+        "signal_density": 14.0,
+        "evidence_strength": 12.0,
+        "coverage_contribution": 14.0,
+    },
+    "comps_ev_sales": {
+        "decision_usefulness": 17.0,
+        "valuation_linkage": 16.0,
+        "comparative_context": 18.0,
+        "signal_density": 14.0,
+        "evidence_strength": 12.0,
+        "coverage_contribution": 13.0,
+    },
+    "peer_market_cap": {
+        "decision_usefulness": 12.0,
+        "valuation_linkage": 9.0,
+        "comparative_context": 14.0,
+        "signal_density": 10.0,
+        "evidence_strength": 10.0,
+        "coverage_contribution": 12.0,
+    },
+    "peer_revenue_ebit": {
+        "decision_usefulness": 14.0,
+        "valuation_linkage": 12.0,
+        "comparative_context": 15.0,
+        "signal_density": 11.0,
+        "evidence_strength": 10.0,
+        "coverage_contribution": 13.0,
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -56,6 +139,18 @@ class _NarrativePack:
     thesis: str
     sections: tuple[dict[str, str], ...]
     conclusion: str
+
+
+@dataclass(frozen=True)
+class _InfographicValidationResult:
+    passed: bool
+    manifest: dict[str, Any]
+    accepted_charts: tuple[dict[str, Any], ...]
+    chart_failures: tuple[dict[str, str], ...]
+    coverage_buckets: tuple[str, ...]
+    required_coverage_buckets: int
+    average_quality_score: float
+    summary: str
 
 
 _CITATION_RE = re.compile(r"\[(\d+)\]")
@@ -101,6 +196,8 @@ class PostRunMemoService:
         memo_markdown_path: Path | None = None
         memo_html_path: Path | None = None
         memo_pdf_path: Path | None = None
+        infographic_attempts: list[dict[str, Any]] = []
+        infographic_summary: dict[str, Any] = {}
 
         started = _utc_now_iso()
         if not with_memo:
@@ -178,18 +275,105 @@ class PostRunMemoService:
         try:
             bundle = self._build_bundle(request=request, result=result)
             bundle_path = output_dir / "memo_bundle.json"
-            bundle_path.write_text(json.dumps(bundle, indent=2), encoding="utf-8")
+            selected_chart_ids = [str(item) for item in (bundle.get("chart_ids") or []) if str(item).strip()]
+            availability = bundle.get("chart_availability") or {}
+            available_ids = [chart_id for chart_id in _DEFAULT_CHART_IDS if availability.get(chart_id, False)]
+            planned_target = _maybe_float((bundle.get("chart_plan") or {}).get("target_count"))
 
-            chart_manifest_path = self._render_infographics(bundle_path=bundle_path, output_dir=output_dir)
-            chart_manifest = json.loads(chart_manifest_path.read_text(encoding="utf-8"))
-            required_charts = max(
-                _DEFAULT_MIN_REQUIRED_CHARTS,
-                int(self.settings.memo_min_infographics),
+            target_charts = min(
+                max(_HARD_MIN_REQUIRED_CHARTS, int(planned_target) if planned_target is not None else _TARGET_INFOGRAPHIC_COUNT),
+                max(_HARD_MIN_REQUIRED_CHARTS, int(self.settings.memo_max_infographics)),
+                len(available_ids),
             )
-            generated_charts = self._validate_chart_manifest(
-                chart_manifest=chart_manifest,
-                required_charts=required_charts,
-            )
+            target_charts = max(_HARD_MIN_REQUIRED_CHARTS, target_charts)
+
+            validation_result: _InfographicValidationResult | None = None
+            chart_manifest: dict[str, Any] = {}
+            for attempt in range(1, _MAX_INFOGRAPHIC_REPAIR_ATTEMPTS + 1):
+                if len(selected_chart_ids) < _HARD_MIN_REQUIRED_CHARTS:
+                    for fallback_id in _DEFAULT_CHART_IDS:
+                        if not availability.get(fallback_id, False):
+                            continue
+                        if fallback_id in selected_chart_ids:
+                            continue
+                        selected_chart_ids.append(fallback_id)
+                        if len(selected_chart_ids) >= _HARD_MIN_REQUIRED_CHARTS:
+                            break
+                if len(selected_chart_ids) < _HARD_MIN_REQUIRED_CHARTS:
+                    raise RuntimeError(
+                        "Insufficient available infographic charts for memo contract "
+                        f"(available={available_ids}, required>={_HARD_MIN_REQUIRED_CHARTS})."
+                    )
+
+                bundle["chart_ids"] = selected_chart_ids[: max(target_charts, _HARD_MIN_REQUIRED_CHARTS)]
+                bundle["chart_takeaways"] = {
+                    chart_id: str((bundle.get("chart_takeaways") or {}).get(chart_id) or "")
+                    for chart_id in bundle["chart_ids"]
+                }
+                bundle_path.write_text(json.dumps(bundle, indent=2), encoding="utf-8")
+
+                chart_manifest_path = self._render_infographics(bundle_path=bundle_path, output_dir=output_dir)
+                chart_manifest = json.loads(chart_manifest_path.read_text(encoding="utf-8"))
+                validation_result = self._validate_infographic_manifest(
+                    bundle=bundle,
+                    chart_manifest=chart_manifest,
+                    required_charts=_HARD_MIN_REQUIRED_CHARTS,
+                )
+
+                attempt_row = {
+                    "attempt": attempt,
+                    "selected_chart_ids": list(bundle["chart_ids"]),
+                    "accepted_chart_ids": [str(item.get("id") or "") for item in validation_result.accepted_charts],
+                    "failed_chart_ids": [str(item.get("id") or "") for item in validation_result.chart_failures],
+                    "average_quality_score": round(validation_result.average_quality_score, 2),
+                    "coverage_buckets": list(validation_result.coverage_buckets),
+                    "summary": validation_result.summary,
+                    "passed": validation_result.passed,
+                }
+                infographic_attempts.append(attempt_row)
+
+                if validation_result.passed:
+                    break
+                if attempt >= _MAX_INFOGRAPHIC_REPAIR_ATTEMPTS:
+                    break
+
+                selected_chart_ids = self._repair_chart_ids(
+                    ticker=request.ticker.strip().upper(),
+                    availability=availability,
+                    previous_chart_ids=bundle["chart_ids"],
+                    validation=validation_result,
+                    target_count=max(target_charts, _HARD_MIN_REQUIRED_CHARTS),
+                    attempt=attempt,
+                )
+
+            if not validation_result or not validation_result.passed:
+                raise RuntimeError(
+                    "Infographic contract did not converge after repair loop: "
+                    f"{(validation_result.summary if validation_result else 'no validation result')}"
+                )
+
+            generated_charts = [dict(item) for item in validation_result.accepted_charts]
+            rendered_ids = [str(item.get("id") or "") for item in generated_charts if str(item.get("id") or "")]
+            bundle["chart_ids"] = rendered_ids
+            bundle["chart_takeaways"] = {
+                chart_id: str((bundle.get("chart_takeaways") or {}).get(chart_id) or "")
+                for chart_id in rendered_ids
+            }
+            bundle["chart_notes"] = self._build_chart_notes(bundle=bundle, rendered_chart_ids=rendered_ids)
+            infographic_summary = {
+                "attempts": len(infographic_attempts),
+                "required_min_charts": _HARD_MIN_REQUIRED_CHARTS,
+                "target_chart_count": max(target_charts, _HARD_MIN_REQUIRED_CHARTS),
+                "final_chart_count": len(rendered_ids),
+                "coverage_buckets": list(validation_result.coverage_buckets),
+                "required_coverage_buckets": validation_result.required_coverage_buckets,
+                "average_quality_score": round(validation_result.average_quality_score, 2),
+                "quality_threshold": _MIN_ANALYTICAL_QUALITY_SCORE,
+                "summary": validation_result.summary,
+                "attempt_log": infographic_attempts,
+            }
+            bundle["infographic_summary"] = infographic_summary
+            bundle_path.write_text(json.dumps(bundle, indent=2), encoding="utf-8")
 
             narrative = self._compose_narrative(bundle=bundle)
             memo_markdown_path = output_dir / "investment_memo.md"
@@ -214,7 +398,9 @@ class PostRunMemoService:
 
             status = "COMPLETED"
             notes.append(
-                f"Memo generated with {len(generated_charts)} charts at {memo_pdf_path}."
+                "Memo generated with "
+                f"{len(generated_charts)} charts at {memo_pdf_path} "
+                f"(attempts={len(infographic_attempts)}, quality={round(validation_result.average_quality_score, 2)})."
             )
         except Exception as exc:  # noqa: BLE001 - wrapper-level failure capture
             status = "COMPLETED_WITH_MEMO_FAILURE"
@@ -236,6 +422,8 @@ class PostRunMemoService:
             pdf_path=memo_pdf_path,
             notes=notes,
             errors=errors,
+            infographic_attempts=infographic_attempts,
+            infographic_summary=infographic_summary,
         )
 
         return MemoWrapperResult(
@@ -323,12 +511,16 @@ class PostRunMemoService:
             ticker=ticker,
         )
 
-        chart_ids = self._plan_chart_ids(
-            ticker=ticker,
+        chart_availability = self._chart_availability(
             scenario_rows=scenario_rows,
             peers_rows=peers_rows,
             sensitivity=sensitivity,
         )
+        chart_plan = self._plan_chart_ids(
+            ticker=ticker,
+            availability=chart_availability,
+        )
+        chart_ids = list(chart_plan.get("chart_ids") or [])
 
         run_log_path = self.repo_root / "artifacts" / "run_logs" / f"{run_id}.log"
         tool_calls_path = (
@@ -399,6 +591,8 @@ class PostRunMemoService:
                 "peerUniverse": [asdict(item) for item in research_packet.peers[:12]],
                 "contradictions": [asdict(item) for item in research_packet.contradictions],
             },
+            "chart_availability": chart_availability,
+            "chart_plan": chart_plan,
             "chart_ids": chart_ids,
             "chart_takeaways": self._chart_takeaways(
                 scenario_rows=scenario_rows,
@@ -408,6 +602,7 @@ class PostRunMemoService:
                 wacc_pct=None if out_wacc is None else out_wacc * 100,
                 g_pct=None if out_terminal_g is None else out_terminal_g * 100,
             ),
+            "chart_notes": {},
             "sources": citations,
             "artifacts": {
                 "runLogPath": str(run_log_path),
@@ -637,26 +832,27 @@ class PostRunMemoService:
 
         return output[:40]
 
-    def _plan_chart_ids(
+    def _chart_availability(
         self,
         *,
-        ticker: str,
         scenario_rows: list[dict[str, Any]],
         peers_rows: list[dict[str, Any]],
         sensitivity: dict[str, Any],
-    ) -> list[str]:
+    ) -> dict[str, bool]:
         valid_ev_ebit = _count_positive_numeric_rows(peers_rows, "EV/EBIT")
         valid_ev_sales = _count_positive_numeric_rows(peers_rows, "EV/Sales")
         valid_market_cap = _count_positive_numeric_rows(peers_rows, "Market Cap ($B)")
         valid_revenue_ebit = _count_valid_peer_revenue_ebit_rows(peers_rows)
+        has_weights = [
+            row
+            for row in scenario_rows
+            if row.get("scenario") in {"Pess", "Base", "Opt"} and _maybe_float(row.get("weightPct")) is not None
+        ]
 
-        availability: dict[str, bool] = {
-            "dcf_outcomes_vs_market": any(row.get("valuePsUsd") is not None for row in scenario_rows),
-            "scenario_gap_vs_market": any(row.get("gapVsMarketPct") is not None for row in scenario_rows),
-            "scenario_weights": any(
-                row.get("scenario") in {"Pess", "Base", "Opt"} and row.get("weightPct") is not None
-                for row in scenario_rows
-            ),
+        return {
+            "dcf_outcomes_vs_market": any(_maybe_float(row.get("valuePsUsd")) is not None for row in scenario_rows),
+            "scenario_gap_vs_market": any(_maybe_float(row.get("gapVsMarketPct")) is not None for row in scenario_rows),
+            "scenario_weights": len(has_weights) >= 3,
             "comps_ev_ebit": valid_ev_ebit >= 3,
             "comps_ev_sales": valid_ev_sales >= 3,
             "sensitivity_heatmap": len(sensitivity.get("grid") or []) >= 9,
@@ -664,56 +860,225 @@ class PostRunMemoService:
             "peer_revenue_ebit": valid_revenue_ebit >= 3,
         }
 
+    def _plan_chart_ids(
+        self,
+        *,
+        ticker: str,
+        availability: dict[str, bool],
+    ) -> dict[str, Any]:
+        available_ids = [chart_id for chart_id in _DEFAULT_CHART_IDS if availability.get(chart_id, False)]
+        if len(available_ids) < _HARD_MIN_REQUIRED_CHARTS:
+            raise RuntimeError(
+                "Unable to satisfy infographic contract: insufficient available charts "
+                f"(available={available_ids}, required>={_HARD_MIN_REQUIRED_CHARTS})."
+            )
+
+        max_charts = max(_HARD_MIN_REQUIRED_CHARTS, int(self.settings.memo_max_infographics))
+        target_count = min(max(_TARGET_INFOGRAPHIC_COUNT, _HARD_MIN_REQUIRED_CHARTS), max_charts, len(available_ids))
+        target_count = max(_HARD_MIN_REQUIRED_CHARTS, target_count)
+
         planner_prompt = (
-            "You are selecting infographic charts for an investment memo.\n"
+            "You are planning investment-banking-grade infographics for a client memo.\n"
+            "Audience: Aswath Damodaran.\n"
             f"Ticker: {ticker}\n"
-            f"Available charts (id -> available): {json.dumps(availability, sort_keys=True)}\n"
-            "Pick 6 to 8 charts that maximize investor usefulness (valuation, scenarios, comps, sensitivity).\n"
-            "Return STRICT JSON only with format: {\"chart_ids\": [\"id1\", ...]}."
+            "First decide the highest-value data views for a full investment case, then map those views to chart IDs.\n"
+            "Use ONLY available chart IDs.\n"
+            f"Available chart IDs: {json.dumps(available_ids)}\n"
+            "Coverage constraints:\n"
+            "1) Must cover valuation framing and sensitivity framing.\n"
+            f"2) Final selection size target={target_count}, hard minimum={_HARD_MIN_REQUIRED_CHARTS}.\n"
+            "Return STRICT JSON only:\n"
+            "{\n"
+            "  \"preferred_data_views\": [\n"
+            "    {\"name\": \"...\", \"why_client_relevant\": \"...\"}\n"
+            "  ],\n"
+            "  \"chart_ids\": [\"id1\", \"id2\"],\n"
+            "  \"selection_rationale\": \"...\"\n"
+            "}\n"
         )
 
+        preferred_data_views: list[dict[str, str]] = []
+        selection_rationale = ""
         selected: list[str] = []
-        required = max(
-            _DEFAULT_MIN_REQUIRED_CHARTS,
-            int(self.settings.memo_min_infographics),
-        )
-        max_charts = max(required, int(self.settings.memo_max_infographics))
         try:
             response = self.llm_client.generate_text(
-                LlmRequest(
-                    prompt=planner_prompt,
-                    model=self.settings.memo_llm_model,
-                )
+                LlmRequest(prompt=planner_prompt, model=self.settings.memo_llm_model)
             )
             parsed = _extract_json_dict(response)
             requested = parsed.get("chart_ids") if isinstance(parsed, dict) else []
             if isinstance(requested, list):
-                selected = [
-                    str(item).strip()
-                    for item in requested
-                    if str(item).strip() in availability and availability[str(item).strip()]
-                ]
+                for item in requested:
+                    chart_id = str(item).strip()
+                    if chart_id and chart_id in available_ids and chart_id not in selected:
+                        selected.append(chart_id)
+
+            views = parsed.get("preferred_data_views") if isinstance(parsed, dict) else []
+            if isinstance(views, list):
+                for view in views[:10]:
+                    if not isinstance(view, dict):
+                        continue
+                    name = str(view.get("name") or "").strip()
+                    reason = str(view.get("why_client_relevant") or "").strip()
+                    if name:
+                        preferred_data_views.append(
+                            {"name": name, "why_client_relevant": reason or "Investor decision support."}
+                        )
+            selection_rationale = str((parsed.get("selection_rationale") if isinstance(parsed, dict) else "") or "").strip()
         except Exception as exc:  # noqa: BLE001 - planner fallback
             self._logger.warning("memo_chart_planner_fallback ticker=%s error=%s", ticker, exc)
 
-        if len(selected) < required:
-            for chart_id in _DEFAULT_CHART_IDS:
-                if not availability.get(chart_id, False):
-                    continue
-                if chart_id in selected:
-                    continue
-                selected.append(chart_id)
-                if len(selected) >= required:
-                    break
+        selected = self._dedupe_chart_ids(selected)
 
-        selected = selected[:max_charts]
-        if len(selected) < required:
-            missing = [chart_id for chart_id, available in availability.items() if available]
+        coverage = self._coverage_from_chart_ids(selected)
+        for required_bucket in _MANDATORY_COVERAGE_BUCKETS:
+            if required_bucket in coverage:
+                continue
+            for fallback_id in _DEFAULT_CHART_IDS:
+                if fallback_id in selected or not availability.get(fallback_id, False):
+                    continue
+                buckets = _CHART_BUCKETS.get(fallback_id, ())
+                if required_bucket not in buckets:
+                    continue
+                selected.append(fallback_id)
+                coverage.update(buckets)
+                break
+
+        for chart_id in _DEFAULT_CHART_IDS:
+            if len(selected) >= target_count:
+                break
+            if chart_id in selected or not availability.get(chart_id, False):
+                continue
+            selected.append(chart_id)
+
+        if len(selected) < _HARD_MIN_REQUIRED_CHARTS:
             raise RuntimeError(
-                "Unable to select required minimum infographics "
-                f"(selected={len(selected)} required={required} available={missing})."
+                "Unable to select sufficient charts for memo contract "
+                f"(selected={selected}, available={available_ids})."
             )
-        return selected
+
+        selected = selected[:target_count]
+        return {
+            "chart_ids": selected,
+            "preferred_data_views": preferred_data_views,
+            "selection_rationale": selection_rationale,
+            "target_count": target_count,
+            "required_min_count": _HARD_MIN_REQUIRED_CHARTS,
+            "coverage_buckets": sorted(self._coverage_from_chart_ids(selected)),
+        }
+
+    def _repair_chart_ids(
+        self,
+        *,
+        ticker: str,
+        availability: dict[str, bool],
+        previous_chart_ids: list[str],
+        validation: _InfographicValidationResult,
+        target_count: int,
+        attempt: int,
+    ) -> list[str]:
+        available_ids = [chart_id for chart_id in _DEFAULT_CHART_IDS if availability.get(chart_id, False)]
+        failed_ids = [str(item.get("id") or "") for item in validation.chart_failures if str(item.get("id") or "")]
+        missing_buckets = [
+            bucket
+            for bucket in _MANDATORY_COVERAGE_BUCKETS
+            if bucket not in set(validation.coverage_buckets)
+        ]
+
+        repair_prompt = (
+            "You are repairing a failed infographic chart plan for a client-facing investment memo.\n"
+            "Audience: Aswath Damodaran.\n"
+            f"Ticker: {ticker}\n"
+            f"Repair attempt index: {attempt + 1}\n"
+            f"Previous chart IDs: {json.dumps(previous_chart_ids)}\n"
+            f"Failed chart IDs and reasons: {json.dumps(validation.chart_failures)}\n"
+            f"Coverage buckets currently present: {json.dumps(list(validation.coverage_buckets))}\n"
+            f"Missing mandatory buckets: {json.dumps(missing_buckets)}\n"
+            f"Available chart IDs: {json.dumps(available_ids)}\n"
+            "Return STRICT JSON only:\n"
+            "{\n"
+            "  \"chart_ids\": [\"id1\", \"id2\"],\n"
+            "  \"repair_rationale\": \"...\"\n"
+            "}\n"
+        )
+
+        repaired: list[str] = []
+        try:
+            response = self.llm_client.generate_text(
+                LlmRequest(prompt=repair_prompt, model=self.settings.memo_llm_model)
+            )
+            parsed = _extract_json_dict(response)
+            requested = parsed.get("chart_ids") if isinstance(parsed, dict) else []
+            if isinstance(requested, list):
+                for item in requested:
+                    chart_id = str(item).strip()
+                    if chart_id and chart_id in available_ids and chart_id not in repaired:
+                        repaired.append(chart_id)
+        except Exception as exc:  # noqa: BLE001 - fallback flow
+            self._logger.warning(
+                "memo_chart_repair_fallback ticker=%s attempt=%s error=%s",
+                ticker,
+                attempt,
+                exc,
+            )
+
+        repaired = self._dedupe_chart_ids(repaired)
+        blocked = set(failed_ids)
+        fallback_order = [chart_id for chart_id in _DEFAULT_CHART_IDS if availability.get(chart_id, False)]
+
+        if not repaired:
+            repaired = [chart_id for chart_id in previous_chart_ids if chart_id not in blocked and chart_id in available_ids]
+
+        coverage = self._coverage_from_chart_ids(repaired)
+        for required_bucket in missing_buckets:
+            if required_bucket in coverage:
+                continue
+            for chart_id in fallback_order:
+                if chart_id in repaired or chart_id in blocked:
+                    continue
+                if required_bucket not in _CHART_BUCKETS.get(chart_id, ()):
+                    continue
+                repaired.append(chart_id)
+                coverage.update(_CHART_BUCKETS.get(chart_id, ()))
+                break
+
+        for chart_id in fallback_order:
+            if len(repaired) >= target_count:
+                break
+            if chart_id in repaired or chart_id in blocked:
+                continue
+            repaired.append(chart_id)
+
+        for chart_id in fallback_order:
+            if len(repaired) >= _HARD_MIN_REQUIRED_CHARTS:
+                break
+            if chart_id in repaired:
+                continue
+            repaired.append(chart_id)
+
+        repaired = repaired[: max(target_count, _HARD_MIN_REQUIRED_CHARTS)]
+        if len(repaired) < _HARD_MIN_REQUIRED_CHARTS:
+            raise RuntimeError(
+                "Infographic repair produced insufficient chart IDs "
+                f"(repaired={repaired}, failed={failed_ids}, available={available_ids})."
+            )
+        return repaired
+
+    def _coverage_from_chart_ids(self, chart_ids: list[str]) -> set[str]:
+        coverage: set[str] = set()
+        for chart_id in chart_ids:
+            coverage.update(_CHART_BUCKETS.get(chart_id, ()))
+        return coverage
+
+    def _dedupe_chart_ids(self, chart_ids: list[str]) -> list[str]:
+        seen: set[str] = set()
+        output: list[str] = []
+        for chart_id in chart_ids:
+            token = str(chart_id).strip()
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            output.append(token)
+        return output
 
     def _chart_takeaways(
         self,
@@ -790,6 +1155,93 @@ class PostRunMemoService:
                 f"Market reference is USD {_fmt(market_price)} per share for scenario benchmarking.",
             )
         return out
+
+    def _build_chart_notes(
+        self,
+        *,
+        bundle: dict[str, Any],
+        rendered_chart_ids: list[str],
+    ) -> dict[str, str]:
+        scenario_rows = (bundle.get("valuation") or {}).get("scenarios") or []
+        peers_rows = (bundle.get("peers") or {}).get("rows") or []
+        sensitivity = bundle.get("sensitivity") or {}
+        market_price = _maybe_float(bundle.get("marketPriceUsd"))
+        weighted = _find_scenario(scenario_rows, "Weighted")
+        base = _find_scenario(scenario_rows, "Base")
+        optimistic = _find_scenario(scenario_rows, "Opt")
+        pessimistic = _find_scenario(scenario_rows, "Pess")
+        source_cap = max(1, len(bundle.get("sources") or []))
+
+        def c(idx: int) -> str:
+            return f"[{min(max(1, idx), source_cap)}]"
+
+        notes: dict[str, str] = {}
+        if weighted and _maybe_float(weighted.get("valuePsUsd")) is not None:
+            notes["dcf_outcomes_vs_market"] = (
+                f"Weighted value/share is USD {_fmt(weighted.get('valuePsUsd'))}; "
+                f"market is USD {_fmt(market_price)}; weighted gap is {_fmt_signed_pct(weighted.get('gapVsMarketPct'))}. "
+                f"{c(1)}{c(2)}"
+            )
+
+        if base and optimistic and pessimistic:
+            notes["scenario_gap_vs_market"] = (
+                "Base and weighted cases frame central value; optimistic and pessimistic tails quantify "
+                "upside/downside asymmetry against spot. "
+                f"{c(1)}{c(3)}"
+            )
+            notes["scenario_weights"] = (
+                "Scenario weights must sum to 100% and reflect probability-adjusted conviction "
+                "rather than narrative preference. "
+                f"{c(2)}{c(3)}"
+            )
+
+        ev_ebit = [row.get("EV/EBIT") for row in peers_rows if (_maybe_float(row.get("EV/EBIT")) or 0) > 0]
+        if ev_ebit:
+            notes["comps_ev_ebit"] = (
+                f"Medians and spread versus target multiple indicate relative valuation positioning; "
+                f"peer median EV/EBIT is {_fmt(_median_numeric(ev_ebit))}x. "
+                f"{c(2)}{c(4)}"
+            )
+
+        ev_sales = [row.get("EV/Sales") for row in peers_rows if (_maybe_float(row.get("EV/Sales")) or 0) > 0]
+        if ev_sales:
+            notes["comps_ev_sales"] = (
+                f"EV/Sales contextualizes growth expectations and margin durability; "
+                f"peer median EV/Sales is {_fmt(_median_numeric(ev_sales))}x. "
+                f"{c(2)}{c(4)}"
+            )
+
+        market_caps_b = [row.get("Market Cap ($B)") for row in peers_rows if (_maybe_float(row.get("Market Cap ($B)")) or 0) > 0]
+        if market_caps_b:
+            min_mm = _fmt(min((_maybe_float(item) or 0) * 1_000.0 for item in market_caps_b))
+            max_mm = _fmt(max((_maybe_float(item) or 0) * 1_000.0 for item in market_caps_b))
+            notes["peer_market_cap"] = (
+                "Peer scale dispersion (USD mm) helps separate size premium from true operating quality; "
+                f"range is USD {min_mm}mm to USD {max_mm}mm. "
+                f"{c(2)}{c(5)}"
+            )
+
+        if _count_valid_peer_revenue_ebit_rows(peers_rows) >= 3:
+            notes["peer_revenue_ebit"] = (
+                "Revenue-to-margin positioning separates scale from profitability quality and highlights "
+                "operating leverage dispersion in peer context. "
+                f"{c(2)}{c(5)}"
+            )
+
+        grid_points = sensitivity.get("grid") or []
+        if grid_points:
+            values = [_maybe_float(point.get("valuePsUsd")) for point in grid_points if _maybe_float(point.get("valuePsUsd")) is not None]
+            if values:
+                notes["sensitivity_heatmap"] = (
+                    f"Sensitivity range is USD {_fmt(min(values))} to USD {_fmt(max(values))} per share; "
+                    "central cell should align with base-case assumptions. "
+                    f"{c(1)}{c(3)}"
+                )
+
+        filtered = {chart_id: notes.get(chart_id, "") for chart_id in rendered_chart_ids if chart_id in notes}
+        for chart_id in rendered_chart_ids:
+            filtered.setdefault(chart_id, f"Chart interpretation should remain tied to sheet-validated outputs. {c(1)}")
+        return filtered
 
     def _render_infographics(self, *, bundle_path: Path, output_dir: Path) -> Path:
         charts_dir = output_dir / "charts"
@@ -1114,6 +1566,7 @@ class PostRunMemoService:
             return _markdown_to_html_blocks(text)
 
         full_width_ids = {"dcf_outcomes_vs_market", "sensitivity_heatmap"}
+        chart_notes = bundle.get("chart_notes") or {}
         chart_pages: list[str] = []
         compact_cards: list[str] = []
         for chart in chart_manifest.get("charts") or []:
@@ -1124,6 +1577,7 @@ class PostRunMemoService:
             chart_title = _escape_html(str(chart.get("title") or chart.get("id") or "Chart"))
             takeaway = _escape_html(str(chart.get("takeaway") or ""))
             chart_id = str(chart.get("id") or "")
+            memo_note = str(chart_notes.get(chart_id) or "")
 
             card = "\n".join(
                 [
@@ -1131,6 +1585,11 @@ class PostRunMemoService:
                     f"  <h3>{chart_title}</h3>",
                     (f"  <p class=\"takeaway\">{takeaway}</p>" if takeaway else ""),
                     f"  <img class=\"chart\" src=\"{chart_src}\" alt=\"{chart_title}\" />",
+                    (
+                        f"  <div class=\"memo-note\">{render_blocks(memo_note)}</div>"
+                        if memo_note
+                        else ""
+                    ),
                     "</article>",
                 ]
             )
@@ -1204,6 +1663,8 @@ class PostRunMemoService:
     .chart-item h3 {{ margin: 0 0 6px 0; font-size: 18px; }}
     .takeaway {{ color: #5f6f84; margin-bottom: 8px; font-size: 12.4px; }}
     .chart {{ width: 100%; max-height: 108mm; object-fit: contain; border: 1px solid #e7edf5; border-radius: 6px; }}
+    .memo-note p {{ margin: 8px 0 0 0; font-size: 12.6px; line-height: 1.45; color: #223b53; }}
+    .memo-note ul, .memo-note ol {{ margin-top: 8px; }}
     .chart-page-full .chart {{ max-height: 216mm; }}
     .chart-grid-page .chart-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }}
     .chart-grid-page .chart-item h3 {{ font-size: 16px; }}
@@ -1239,28 +1700,163 @@ class PostRunMemoService:
 </html>
 """
 
-    def _validate_chart_manifest(
+    def _validate_infographic_manifest(
         self,
         *,
+        bundle: dict[str, Any],
         chart_manifest: dict[str, Any],
         required_charts: int,
-    ) -> list[dict[str, Any]]:
+    ) -> _InfographicValidationResult:
         rendered = chart_manifest.get("charts") or []
         failed = chart_manifest.get("failed_charts") or []
-        if failed:
-            raise RuntimeError(f"Chart render failures present: {json.dumps(failed)}")
-        if len(rendered) < required_charts:
-            raise RuntimeError(
-                "Insufficient infographics generated "
-                f"(got={len(rendered)}, required>={required_charts})."
+        chart_failures: list[dict[str, str]] = []
+
+        for row in failed:
+            if not isinstance(row, dict):
+                continue
+            chart_failures.append(
+                {
+                    "id": str(row.get("id") or ""),
+                    "reason": str(row.get("error") or "render_failed"),
+                }
             )
+
+        accepted: list[dict[str, Any]] = []
         for chart in rendered:
+            chart_id = str(chart.get("id") or "")
             path = Path(str(chart.get("png_path") or "")).resolve()
             if not path.exists():
-                raise RuntimeError(f"Missing chart artifact: {path}")
+                chart_failures.append({"id": chart_id, "reason": "missing_png"})
+                continue
             if path.stat().st_size < 12_000:
-                raise RuntimeError(f"Chart artifact appears empty or too small: {path}")
-        return rendered
+                chart_failures.append({"id": chart_id, "reason": "png_too_small"})
+                continue
+            scored = dict(chart)
+            scored["quality_score"] = self._chart_quality_score(chart_id=chart_id, bundle=bundle)
+            accepted.append(scored)
+
+        coverage = sorted(self._coverage_from_chart_ids([str(item.get("id") or "") for item in accepted]))
+        missing_coverage = [bucket for bucket in _MANDATORY_COVERAGE_BUCKETS if bucket not in coverage]
+        quality_scores = [_maybe_float(item.get("quality_score")) or 0.0 for item in accepted]
+        average_quality = (sum(quality_scores) / len(quality_scores)) if quality_scores else 0.0
+
+        issues: list[str] = []
+        if chart_failures:
+            issues.append(f"render_failures={len(chart_failures)}")
+        if len(accepted) < required_charts:
+            issues.append(f"chart_count={len(accepted)}<{required_charts}")
+        if missing_coverage:
+            issues.append(f"missing_coverage={','.join(missing_coverage)}")
+        if average_quality < _MIN_ANALYTICAL_QUALITY_SCORE:
+            issues.append(
+                "quality_score="
+                f"{round(average_quality, 2)}<{_MIN_ANALYTICAL_QUALITY_SCORE}"
+            )
+
+        passed = len(issues) == 0
+        summary = (
+            "passed"
+            if passed
+            else " | ".join(
+                ["infographic_contract_failed"] + issues
+            )
+        )
+
+        return _InfographicValidationResult(
+            passed=passed,
+            manifest=chart_manifest,
+            accepted_charts=tuple(accepted),
+            chart_failures=tuple(chart_failures),
+            coverage_buckets=tuple(coverage),
+            required_coverage_buckets=len(_MANDATORY_COVERAGE_BUCKETS),
+            average_quality_score=average_quality,
+            summary=summary,
+        )
+
+    def _chart_quality_score(self, *, chart_id: str, bundle: dict[str, Any]) -> float:
+        base_components = _CHART_QUALITY_BASE.get(chart_id)
+        score = sum(base_components.values()) if base_components else 70.0
+
+        scenario_rows = (bundle.get("valuation") or {}).get("scenarios") or []
+        peers_rows = (bundle.get("peers") or {}).get("rows") or []
+        sensitivity = bundle.get("sensitivity") or {}
+        market_price = _maybe_float(bundle.get("marketPriceUsd"))
+        weighted = _find_scenario(scenario_rows, "Weighted")
+
+        if chart_id == "dcf_outcomes_vs_market":
+            if market_price is None or market_price <= 0:
+                score -= 10.0
+            if not weighted or _maybe_float(weighted.get("valuePsUsd")) is None:
+                score -= 12.0
+            if weighted and _maybe_float(weighted.get("gapVsMarketPct")) is not None:
+                score += 4.0
+
+        if chart_id == "scenario_weights":
+            weights = [
+                _maybe_float(row.get("weightPct"))
+                for row in scenario_rows
+                if row.get("scenario") in {"Pess", "Base", "Opt"}
+            ]
+            valid = [item for item in weights if item is not None]
+            if len(valid) < 3:
+                score -= 12.0
+            else:
+                total = sum(valid)
+                if abs(total - 100.0) <= 0.6:
+                    score += 4.0
+                elif abs(total - 100.0) <= 2.0:
+                    score += 1.0
+                else:
+                    score -= 4.0
+
+        if chart_id == "scenario_gap_vs_market":
+            gap_values = [_maybe_float(row.get("gapVsMarketPct")) for row in scenario_rows]
+            valid_gaps = [item for item in gap_values if item is not None]
+            if len(valid_gaps) < 3:
+                score -= 10.0
+            elif not any(item > 0 for item in valid_gaps) or not any(item < 0 for item in valid_gaps):
+                score -= 3.0
+            else:
+                score += 3.0
+
+        if chart_id in {"comps_ev_ebit", "comps_ev_sales"}:
+            metric = "EV/EBIT" if chart_id == "comps_ev_ebit" else "EV/Sales"
+            valid = _count_positive_numeric_rows(peers_rows, metric)
+            if valid >= 6:
+                score += 6.0
+            elif valid >= 4:
+                score += 2.0
+            elif valid >= 3:
+                score -= 1.0
+            else:
+                score -= 18.0
+
+        if chart_id == "peer_market_cap":
+            valid_market_cap = _count_positive_numeric_rows(peers_rows, "Market Cap ($B)")
+            if valid_market_cap >= 6:
+                score += 4.0
+            elif valid_market_cap < 3:
+                score -= 16.0
+
+        if chart_id == "peer_revenue_ebit":
+            valid_scatter = _count_valid_peer_revenue_ebit_rows(peers_rows)
+            if valid_scatter >= 6:
+                score += 5.0
+            elif valid_scatter < 3:
+                score -= 18.0
+
+        if chart_id == "sensitivity_heatmap":
+            cells = len(sensitivity.get("grid") or [])
+            if cells >= 25:
+                score += 6.0
+            elif cells >= 16:
+                score += 3.0
+            elif cells >= 9:
+                score -= 1.0
+            else:
+                score -= 20.0
+
+        return max(0.0, min(100.0, score))
 
     def _render_pdf(self, *, html_path: Path, pdf_path: Path) -> None:
         script_path = self.repo_root / "infographics" / "scripts" / "render_pdf_from_html.mjs"
@@ -1303,6 +1899,8 @@ class PostRunMemoService:
         pdf_path: Path | None,
         notes: list[str],
         errors: list[str],
+        infographic_attempts: list[dict[str, Any]] | None = None,
+        infographic_summary: dict[str, Any] | None = None,
     ) -> None:
         chart_count = 0
         if chart_manifest_path and chart_manifest_path.exists():
@@ -1328,6 +1926,8 @@ class PostRunMemoService:
                 "memo_pdf": str(pdf_path) if pdf_path else "",
             },
             "infographics_generated": chart_count,
+            "infographic_attempts": infographic_attempts or [],
+            "infographic_summary": infographic_summary or {},
             "notes": notes,
             "errors": errors,
         }

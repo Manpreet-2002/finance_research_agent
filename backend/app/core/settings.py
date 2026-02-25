@@ -11,6 +11,9 @@ class Settings:
     app_env: str = "dev"
     llm_provider: str = "google"
     llm_model: str = "gemini-3"
+    memo_llm_model: str = "gemini-3-pro-preview"
+    memo_min_infographics: int = 6
+    memo_max_infographics: int = 7
     google_api_key: str = ""
     google_auth_mode: str = "oauth"
     google_oauth_client_secret_file: str = "credentials.json"
@@ -64,6 +67,9 @@ def load_settings() -> Settings:
         app_env=os.getenv("APP_ENV", "dev"),
         llm_provider=os.getenv("LLM_PROVIDER", "google"),
         llm_model=os.getenv("LLM_MODEL", "gemini-3"),
+        memo_llm_model=os.getenv("MEMO_LLM_MODEL", "gemini-3-pro-preview"),
+        memo_min_infographics=int(os.getenv("MEMO_MIN_INFOGRAPHICS", "6")),
+        memo_max_infographics=int(os.getenv("MEMO_MAX_INFOGRAPHICS", "7")),
         google_api_key=os.getenv("GOOGLE_API_KEY", ""),
         google_auth_mode=os.getenv("GOOGLE_AUTH_MODE", "oauth"),
         google_oauth_client_secret_file=os.getenv(
