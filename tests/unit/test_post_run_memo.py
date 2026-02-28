@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from backend.app.memo.post_run_memo import (
     _count_valid_peer_revenue_ebit_rows,
     _extract_json_dict,
     _extract_timestamp,
     _flatten_numeric_vector,
+    _json_dumps,
     _markdown_to_html_blocks,
     _median_numeric,
     _normalize_citations,
@@ -73,3 +74,9 @@ def test_markdown_to_html_blocks_supports_lists() -> None:
     assert "<p>Intro line.</p>" in html
     assert "<ul><li>one</li><li>two</li></ul>" in html
     assert "<ol><li>alpha</li><li>beta</li></ol>" in html
+
+
+def test_json_dumps_serializes_python_date_values() -> None:
+    payload = {"effective_on": date(2026, 2, 25)}
+    dumped = _json_dumps(payload)
+    assert "\"effective_on\": \"2026-02-25\"" in dumped

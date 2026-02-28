@@ -310,7 +310,7 @@ class PostRunMemoService:
                     chart_id: str((bundle.get("chart_takeaways") or {}).get(chart_id) or "")
                     for chart_id in bundle["chart_ids"]
                 }
-                bundle_path.write_text(json.dumps(bundle, indent=2), encoding="utf-8")
+                bundle_path.write_text(_json_dumps(bundle), encoding="utf-8")
 
                 chart_manifest_path = self._render_infographics(bundle_path=bundle_path, output_dir=output_dir)
                 chart_manifest = json.loads(chart_manifest_path.read_text(encoding="utf-8"))
@@ -373,7 +373,7 @@ class PostRunMemoService:
                 "attempt_log": infographic_attempts,
             }
             bundle["infographic_summary"] = infographic_summary
-            bundle_path.write_text(json.dumps(bundle, indent=2), encoding="utf-8")
+            bundle_path.write_text(_json_dumps(bundle), encoding="utf-8")
 
             narrative = self._compose_narrative(bundle=bundle)
             memo_markdown_path = output_dir / "investment_memo.md"
@@ -2207,3 +2207,7 @@ def _json_default(value: Any) -> Any:
         except Exception:  # noqa: BLE001
             return str(value)
     return str(value)
+
+
+def _json_dumps(value: Any) -> str:
+    return json.dumps(value, indent=2, default=_json_default)

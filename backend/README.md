@@ -1,6 +1,6 @@
 # Backend (V1)
 
-Scaffold for the FastAPI orchestration layer described in the PRD.
+FastAPI orchestration layer for valuation execution intake and history APIs.
 
 ## Responsibilities
 - orchestrate valuation runs
@@ -42,6 +42,29 @@ This baseline is required for Gemini thought-signature-safe tool calling with `g
 - `app/tools/corporate_actions/alpha_vantage.py`: Alpha Vantage corporate actions adapter
 - `app/tools/peer/finnhub.py`: Finnhub peer universe adapter
 - `app/tools/llm_tools.py`: strict Python tool-call registry for orchestrator/LLM
+- `app/api/main.py`: FastAPI app entrypoint
+- `app/api/executions/router.py`: ticker submission/history endpoints
+- `app/api/executions/store.py`: SQLite execution persistence
+- `app/api/executions/service.py`: single-worker queue processor
 
 ## Smoke test
 - `uv run scripts/smoke_test_langgraph_runner.py --ticker AAPL`
+
+## API run
+Start backend API locally:
+
+```bash
+PYTHONPATH=. uv run uvicorn backend.app.api.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+### Endpoints
+- `GET /healthz`
+- `POST /api/v1/executions` with `{ "ticker": "AAPL" }`
+- `GET /api/v1/executions`
+- `GET /api/v1/executions/{execution_id}`
+- `GET /api/v1/executions/{execution_id}/memo.pdf`
+
+### Runtime notes
+- Execution lifecycle statuses: `QUEUED`, `RUNNING`, `COMPLETED`, `FAILED`
+- Execution persistence defaults to `artifacts/api/executions.db`
+- Timestamps are returned in UTC ISO 8601 format

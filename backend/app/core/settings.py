@@ -59,6 +59,22 @@ class Settings:
         "Valuation_Template_TTM_TSM_RD_Lease_BankStyle_ExcelGraph_Logbook.xlsx"
     )
     sheets_logbook_file: str = "Valuation_Agent_Logbook_ExcelGraph.xlsx"
+    api_host: str = "0.0.0.0"
+    api_port: int = 8000
+    api_cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    execution_db_path: str = "artifacts/api/executions.db"
+    execution_worker_poll_seconds: float = 1.0
+    execution_worker_enabled: bool = True
+    execution_worker_concurrency: int = 1
+
+
+def _parse_bool(value: str, default: bool) -> bool:
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def load_settings() -> Settings:
@@ -127,5 +143,22 @@ def load_settings() -> Settings:
         ),
         sheets_logbook_file=os.getenv(
             "SHEETS_LOGBOOK_FILE", "Valuation_Agent_Logbook_ExcelGraph.xlsx"
+        ),
+        api_host=os.getenv("API_HOST", "0.0.0.0"),
+        api_port=int(os.getenv("API_PORT", "8000")),
+        api_cors_origins=os.getenv(
+            "API_CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+        ),
+        execution_db_path=os.getenv("EXECUTION_DB_PATH", "artifacts/api/executions.db"),
+        execution_worker_poll_seconds=float(
+            os.getenv("EXECUTION_WORKER_POLL_SECONDS", "1.0")
+        ),
+        execution_worker_enabled=_parse_bool(
+            os.getenv("EXECUTION_WORKER_ENABLED", "true"),
+            default=True,
+        ),
+        execution_worker_concurrency=max(
+            1,
+            int(os.getenv("EXECUTION_WORKER_CONCURRENCY", "1")),
         ),
     )
