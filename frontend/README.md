@@ -1,13 +1,18 @@
 # Frontend (V1)
 
-Planned Next.js app for ticker intake, run controls, streaming progress, and links to spreadsheet/memo artifacts.
+Next.js dashboard for ticker submission and valuation execution history.
 
-## Planned modules
-- `app/`: routes and pages
-- `components/`: reusable UI components
-- `lib/`: API client and shared helpers
+## Features
+- submit stock ticker to backend (`POST /api/v1/executions`)
+- live execution history table (`GET /api/v1/executions`)
+- direct links to Google Sheets and memo PDF API endpoint
+- explicit UTC timestamps across the UI
 
-## Suggested bootstrap
+## Local run
 ```bash
-npx create-next-app@latest frontend
+cd frontend
+npm install
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000 npm run dev
 ```
+
+Default app URL: `http://localhost:3000`.

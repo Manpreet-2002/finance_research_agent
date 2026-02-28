@@ -1,0 +1,28 @@
+<svg width="196" height="196" viewBox="0 0 196 196" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="valenceMarkTitle valenceMarkDesc">
+  <title id="valenceMarkTitle">Valence mark</title>
+  <desc id="valenceMarkDesc">A geometric symbol representing a valuation grid and a rising intrinsic value line.</desc>
+  <defs>
+    <linearGradient id="markInk" x1="24" y1="18" x2="172" y2="178" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#10243A"/>
+      <stop offset="1" stop-color="#1E3753"/>
+    </linearGradient>
+    <linearGradient id="markGold" x1="44" y1="138" x2="150" y2="52" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E1C98D"/>
+      <stop offset="1" stop-color="#B78D41"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="16" y="16" width="164" height="164" rx="34" fill="url(#markInk)"/>
+  <rect x="38" y="38" width="120" height="120" rx="20" stroke="#F7F3EA" stroke-opacity="0.18" stroke-width="2.5"/>
+
+  <path d="M68 48V148" stroke="#F7F3EA" stroke-opacity="0.14" stroke-width="2"/>
+  <path d="M98 48V148" stroke="#F7F3EA" stroke-opacity="0.1" stroke-width="2"/>
+  <path d="M128 48V148" stroke="#F7F3EA" stroke-opacity="0.08" stroke-width="2"/>
+  <path d="M48 68H148" stroke="#F7F3EA" stroke-opacity="0.12" stroke-width="2"/>
+  <path d="M48 98H148" stroke="#F7F3EA" stroke-opacity="0.1" stroke-width="2"/>
+  <path d="M48 128H148" stroke="#F7F3EA" stroke-opacity="0.08" stroke-width="2"/>
+
+  <path d="M52 132L80 108L100 114L124 84L146 66" stroke="url(#markGold)" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="146" cy="66" r="7" fill="#F4E7C3"/>
+  <path d="M144 52L158 66L144 80" stroke="#F4E7C3" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
