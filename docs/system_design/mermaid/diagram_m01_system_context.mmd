@@ -1,0 +1,47 @@
+flowchart LR
+  classDef control fill:#dbeafe,stroke:#2563eb,color:#1e293b,stroke-width:1.5px;
+  classDef data fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px;
+  classDef model fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px;
+  classDef artifact fill:#ede9fe,stroke:#7c3aed,color:#4c1d95,stroke-width:1.5px;
+  classDef interface fill:#ffe4e6,stroke:#e11d48,color:#881337,stroke-width:1.5px;
+
+  U[Analyst / PM / Client]
+  FE["Next.js Dashboard<br/>frontend/components/execution-dashboard.tsx"]
+  API["FastAPI API Layer<br/>backend/app/api/main.py"]
+  Queue["ExecutionStore<br/>SQLite executions queue"]
+  Worker["ExecutionService worker thread<br/>claim -> run -> finalize"]
+
+  Runner[ValuationRunner]
+  Agent["LangGraphFinanceAgent<br/>Deterministic phase graph"]
+  SM["V1WorkflowStateMachine<br/>intake..publish"]
+  Skills["Skill Router + Loader<br/>phase/global bundles"]
+  Tools["LlmToolRegistry<br/>typed tool firewall"]
+
+  Providers["Provider adapters<br/>SEC/Finnhub/FRED/Tavily/Transcripts/Actions/Peers"]
+  DataSvc["DataService + ResearchService<br/>canonical + research packets"]
+  Sheets["GoogleSheetsEngine<br/>template copy + named ranges"]
+  Workbook["WorkbookContract<br/>required tabs/ranges"]
+
+  Memo["PostRunMemoService<br/>infographics + narrative + PDF"]
+  Artifacts["Artifacts Store<br/>run_logs, canonical_datasets, memos"]
+  GS[(Google Sheets workbook)]
+
+  U --> FE --> API --> Queue --> Worker
+  Worker --> Runner --> Agent
+  Agent --> SM
+  Agent --> Skills
+  Agent --> Tools
+  Tools --> DataSvc --> Providers
+  Tools --> Sheets --> GS
+  Agent --> Workbook
+  Runner --> Memo --> Artifacts
+  Memo --> Sheets
+  API --> Queue
+  API --> FE
+  FE --> API
+
+  class FE,API,Queue,Worker,Runner,Agent,SM,Skills,Tools control;
+  class Providers,DataSvc,Sheets,Workbook,GS data;
+  class Memo model;
+  class Artifacts artifact;
+  class U interface;

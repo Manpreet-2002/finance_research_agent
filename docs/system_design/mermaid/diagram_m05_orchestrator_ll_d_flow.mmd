@@ -1,0 +1,38 @@
+flowchart TD
+  classDef runtime fill:#dbeafe,stroke:#2563eb,color:#1e3a8a,stroke-width:1.5px;
+  classDef decision fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px;
+  classDef action fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px;
+  classDef fail fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px;
+
+  Start["ValuationRunner.run(request)"] --> Boot["Build dependencies<br/>llm_client, sheets_engine, data/research services"]
+  Boot --> Init["LangGraphFinanceAgent.run<br/>init state and run context"]
+  Init --> Canonical["Prepare canonical dataset<br/>prefill eligible named ranges"]
+  Canonical --> PhaseLoop["For each phase in state machine order"]
+
+  PhaseLoop --> SkillLoad["Load phase skills<br/>global + phase-specific"]
+  SkillLoad --> Prompt["Compose system prompt<br/>skills + references + constraints"]
+  Prompt --> Invoke["Invoke model with tool schemas"]
+  Invoke --> ToolGate["Apply tool gate checks<br/>scope, phase allowlists, payload schema"]
+  ToolGate --> ToolExec["Execute accepted tools<br/>providers/sheets/math"]
+  ToolExec --> TurnBudget{"Turn/time budget left?"}
+  TurnBudget -->|Yes| ExitCheck["Phase exit contract check"]
+  TurnBudget -->|No| PhaseFail["Hard fail phase<br/>budget exhausted"]
+
+  ExitCheck -->|Incomplete| Repair["Repair guidance loop<br/>bounded passes"]
+  Repair --> Invoke
+  ExitCheck -->|Complete| NextPhase{"More phases?"}
+  NextPhase -->|Yes| PhaseLoop
+  NextPhase -->|No| Finalize["Finalize run<br/>citation/story normalization<br/>output integrity checks"]
+
+  Finalize --> FinalStatus{"Final status"}
+  FinalStatus -->|COMPLETED| Publish["Write log status and append logbook row"]
+  FinalStatus -->|FAILED| FailRun["Persist failure notes and diagnostics"]
+
+  Publish --> End["Return ValuationRunResult"]
+  PhaseFail --> FailRun
+  FailRun --> End
+
+  class Start,Boot,Init,PhaseLoop,SkillLoad,Prompt,Invoke,ToolGate,ToolExec runtime;
+  class TurnBudget,ExitCheck,NextPhase,FinalStatus decision;
+  class Canonical,Repair,Finalize,Publish,End action;
+  class PhaseFail,FailRun fail;

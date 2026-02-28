@@ -1,0 +1,24 @@
+flowchart TB
+  classDef guard fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px;
+  classDef check fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px;
+  classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px;
+  classDef fail fill:#fce7f3,stroke:#db2777,color:#831843,stroke-width:1.5px;
+
+  Start["Tool call or phase transition"] --> L1["Layer 1<br/>Turn/time/invoke budgets"]
+  L1 --> L2["Layer 2<br/>Run-scoped spreadsheet_id injection"]
+  L2 --> L3["Layer 3<br/>Phase write allowlists<br/>named ranges + tables"]
+  L3 --> L4["Layer 4<br/>Sheet engine protections<br/>unknown range, formula-owned, shape mismatch"]
+  L4 --> L5["Layer 5<br/>Exit contracts<br/>validation + memo completeness"]
+  L5 --> L6["Layer 6<br/>Finalize auto-repair<br/>citations and story normalization"]
+
+  L6 --> QC{"All contracts satisfied?"}
+  QC -->|Yes| OK["Publish completed run<br/>logbook append + artifact links"]
+  QC -->|No| Retry["Repair loop<br/>bounded retries"]
+  Retry --> RC{"Recovered?"}
+  RC -->|Yes| OK
+  RC -->|No| FAIL["Fail execution<br/>status=FAILED + explicit error_message"]
+
+  class L1,L2,L3,L4,L5,L6 guard;
+  class QC,RC check;
+  class OK ok;
+  class Retry,FAIL fail;

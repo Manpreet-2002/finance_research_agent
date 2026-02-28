@@ -1,0 +1,65 @@
+{
+  "version": "2026-02-26",
+  "owner": "finance_research_agent",
+  "diagrams": [
+    {
+      "id": "m01",
+      "title": "System Context",
+      "type": "mermaid-flowchart",
+      "source": "docs/system_design/mermaid/diagram_m01_system_context.mmd",
+      "rendered_png": "docs/system_design/assets/diagram_m01_system_context.png",
+      "purpose": "Top-level runtime architecture across frontend, API, orchestration, tools, sheets, and artifacts."
+    },
+    {
+      "id": "m02",
+      "title": "Execution Sequence",
+      "type": "mermaid-sequence",
+      "source": "docs/system_design/mermaid/diagram_m02_phase_execution_sequence.mmd",
+      "rendered_png": "docs/system_design/assets/diagram_m02_phase_execution_sequence.png",
+      "purpose": "Request-to-deliverable lifecycle from submission through memo artifact serving."
+    },
+    {
+      "id": "m03",
+      "title": "Guardrails and Contracts",
+      "type": "mermaid-flowchart",
+      "source": "docs/system_design/mermaid/diagram_m03_guardrails_and_contracts.mmd",
+      "rendered_png": "docs/system_design/assets/diagram_m03_guardrails_and_contracts.png",
+      "purpose": "Layered quality and safety controls with bounded repair/fail paths."
+    },
+    {
+      "id": "m04",
+      "title": "Memo Artifact Lineage",
+      "type": "mermaid-flowchart",
+      "source": "docs/system_design/mermaid/diagram_m04_memo_artifact_lineage.mmd",
+      "rendered_png": "docs/system_design/assets/diagram_m04_memo_artifact_lineage.png",
+      "purpose": "Data lineage from sheet/canonical/research inputs to memo outputs and final execution status."
+    },
+    {
+      "id": "m05",
+      "title": "Orchestrator LLD Flow",
+      "type": "mermaid-flowchart",
+      "source": "docs/system_design/mermaid/diagram_m05_orchestrator_ll_d_flow.mmd",
+      "rendered_png": "docs/system_design/assets/diagram_m05_orchestrator_ll_d_flow.png",
+      "purpose": "Detailed orchestration control flow including phase loop, gating, and finalize semantics."
+    },
+    {
+      "id": "m06",
+      "title": "Execution State Machine",
+      "type": "mermaid-state",
+      "source": "docs/system_design/mermaid/diagram_m06_execution_state_machine.mmd",
+      "rendered_png": "docs/system_design/assets/diagram_m06_execution_state_machine.png",
+      "purpose": "Queue lifecycle state transitions and recovery semantics for execution rows."
+    }
+  ],
+  "retained_legacy_assets": [
+    "docs/system_design/assets/diagram_01_as_built_architecture.png",
+    "docs/system_design/assets/diagram_02_phase_sequence.png",
+    "docs/system_design/assets/diagram_03_sheet_math_boundaries.png",
+    "docs/system_design/excalidraw/diagram_01_as_built_architecture.excalidraw.json",
+    "docs/system_design/excalidraw/diagram_02_phase_sequence.excalidraw.json",
+    "docs/system_design/excalidraw/diagram_03_sheet_math_boundaries.excalidraw.json",
+    "docs/system_design/excalidraw/diagram_04_aapl_run_telemetry.excalidraw.json",
+    "docs/system_design/excalidraw/diagram_05_execution_api_memo_flow.excalidraw.json",
+    "docs/system_design/excalidraw/diagram_06_memo_pipeline_failure_paths.excalidraw.json"
+  ]
+}

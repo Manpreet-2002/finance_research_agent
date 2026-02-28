@@ -1,0 +1,35 @@
+stateDiagram-v2
+  [*] --> QUEUED: POST /api/v1/executions
+  QUEUED --> RUNNING: worker claim_next_queued()
+  RUNNING --> COMPLETED: valuation COMPLETED + memo COMPLETED + pdf exists
+  RUNNING --> FAILED: valuation FAILED
+  RUNNING --> FAILED: memo COMPLETED_WITH_MEMO_FAILURE
+  RUNNING --> FAILED: unhandled exception
+
+  FAILED --> RUNNING: manual recovery script (optional)
+  RUNNING --> COMPLETED: mark_completed after successful recovery
+
+  note right of QUEUED
+    Row inserted with:
+    status=QUEUED
+    submitted_at_utc
+    generated run_id
+  end note
+
+  note right of RUNNING
+    started_at_utc set once
+    worker executes valuation then memo
+  end note
+
+  note right of COMPLETED
+    finished_at_utc set
+    spreadsheet_url present
+    memo_pdf_path present
+    error_message cleared
+  end note
+
+  note right of FAILED
+    finished_at_utc set
+    error_message records merged context:
+    valuation_status + memo_status + notes
+  end note

@@ -1,0 +1,44 @@
+sequenceDiagram
+  autonumber
+  participant UI as Frontend Dashboard
+  participant API as FastAPI /api/v1
+  participant DB as ExecutionStore (SQLite)
+  participant W as Execution Worker
+  participant VR as ValuationRunner
+  participant LG as LangGraphFinanceAgent
+  participant SH as GoogleSheetsEngine
+  participant MS as PostRunMemoService
+
+  UI->>API: POST /executions {ticker}
+  API->>DB: create_execution(status=QUEUED)
+  API-->>UI: 202 ExecutionResponse
+
+  loop Poll every 10s
+    UI->>API: GET /executions?page=1&page_size=50
+    API->>DB: list_executions()
+    API-->>UI: items[] with status/timestamps/links
+  end
+
+  W->>DB: claim_next_queued() -> RUNNING
+  W->>VR: run(ValuationRunRequest)
+  VR->>LG: execute deterministic phases
+
+  LG->>SH: copy template + prefill inputs
+  LG->>SH: write_named_ranges/tables per phase allowlist
+  LG->>SH: read_outputs(out_*)
+  LG->>SH: finalize logs/citations/story hooks
+
+  VR-->>W: ValuationRunResult(status=COMPLETED, spreadsheet_id)
+  W->>MS: generate(with_memo=true)
+  MS->>SH: read memo source ranges + sources table
+  MS->>MS: render infographics + markdown/html/pdf + manifest
+
+  alt Valuation + memo both complete
+    W->>DB: mark_completed(company_name, sheet_url, memo_pdf_path)
+  else Any failure
+    W->>DB: mark_failed(error_message, partial artifacts)
+  end
+
+  UI->>API: GET /executions/{id}/memo.pdf
+  API->>DB: load execution row
+  API-->>UI: application/pdf (if path allowed and file exists)

@@ -1,0 +1,37 @@
+flowchart LR
+  classDef source fill:#dbeafe,stroke:#2563eb,color:#1e3a8a,stroke-width:1.5px;
+  classDef transform fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px;
+  classDef output fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px;
+  classDef fail fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px;
+
+  Sheet["Sheet named ranges<br/>out_*, sensitivity, comps, story, sources"] --> Bundle[memo_bundle.json]
+  Canonical[canonical_dataset_*.json] --> Bundle
+  Research["Research packet<br/>news/transcripts/actions/peers"] --> Bundle
+  Logs[run log + tool calls artifact paths] --> Bundle
+
+  Bundle --> Plan["Chart planner<br/>availability + LLM + fallback"]
+  Plan --> Render[render_run_echarts_pack.mjs]
+  Render --> Manifest[charts/chart_manifest.json]
+  Manifest --> Validate["Chart contract validation<br/>count + coverage + quality"]
+
+  Validate -->|pass| Narrative["Narrative composer<br/>JSON schema + citations"]
+  Validate -->|fail| Repair["Repair chart selection<br/>retry up to max attempts"]
+  Repair --> Render
+  Repair -->|exhausted| MemoFail[wrapper_status=COMPLETED_WITH_MEMO_FAILURE]
+
+  Narrative --> MD[investment_memo.md]
+  Narrative --> HTML[investment_memo.html]
+  HTML --> PDF["render_pdf_from_html.mjs<br/>investment_memo.pdf"]
+
+  Bundle --> MemoManifest["memo_manifest.json<br/>status + artifacts + notes/errors"]
+  Manifest --> MemoManifest
+  MD --> MemoManifest
+  HTML --> MemoManifest
+  PDF --> MemoManifest
+
+  MemoManifest --> ExecState["ExecutionStore finalization<br/>COMPLETED or FAILED"]
+
+  class Sheet,Canonical,Research,Logs source;
+  class Bundle,Plan,Render,Validate,Repair,Narrative transform;
+  class Manifest,MD,HTML,PDF,MemoManifest,ExecState output;
+  class MemoFail fail;
