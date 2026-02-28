@@ -43,6 +43,11 @@ Use `uv` for Python workflows:
 - `uv run scripts/google_sheets_smoke_test.py --title test_graph_1`
 - `uv run python -m py_compile scripts/google_sheets_smoke_test.py`
 
+Run the API and frontend locally:
+- Backend API: `PYTHONPATH=. uv run uvicorn backend.app.api.main:app --host 127.0.0.1 --port 8000`
+- Frontend install: `cd frontend && npm install`
+- Frontend dev server: `cd frontend && NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000 npm run dev`
+
 General repo commands:
 - `git status`
 - `rg --files`
