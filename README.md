@@ -302,20 +302,20 @@ The frontend is intentionally client-facing and premium:
 ## 13. Operational Runbook
 Backend API:
 ```bash
-cd /Users/manpreet/Development/finance_research_agent
+cd /path/to/finance_research_agent
 PYTHONPATH=. uv run uvicorn backend.app.api.main:app --host 127.0.0.1 --port 8000
 ```
 
 Frontend:
 ```bash
-cd /Users/manpreet/Development/finance_research_agent/frontend
+cd /path/to/finance_research_agent/frontend
 npm install
 NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000 npm run dev
 ```
 
 Smoke test:
 ```bash
-cd /Users/manpreet/Development/finance_research_agent
+cd /path/to/finance_research_agent
 PYTHONPATH=. uv run scripts/smoke_test_langgraph_runner.py --ticker ORCL --env-file .env
 ```
 
