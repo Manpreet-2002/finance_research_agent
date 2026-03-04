@@ -1,5 +1,8 @@
 # Finance Research Agent: Complete System Design (HLD + LLD)
 
+Live UI:
+[https://finance-research-agent.vercel.app](https://finance-research-agent.vercel.app)
+
 Last updated: 2026-03-04
 
 ## 1. Scope
@@ -336,7 +339,7 @@ PYTHONPATH=. uv run scripts/smoke_test_langgraph_runner.py --ticker ORCL --env-f
 
 ### 13.2 Deployed Production Surfaces (Current)
 Current public entrypoints:
-1. Frontend (Vercel): `https://finance-research-agent.vercel.app`
+1. Frontend (Vercel): [https://finance-research-agent.vercel.app](https://finance-research-agent.vercel.app)
 2. Backend API (Cloud Run): `https://finance-research-api-gfnc7q4q7a-uc.a.run.app`
 3. Backend API canonical URL (Cloud Run): `https://finance-research-api-820190948453.us-central1.run.app`
 
