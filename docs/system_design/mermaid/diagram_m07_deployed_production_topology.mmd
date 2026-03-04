@@ -1,0 +1,33 @@
+flowchart LR
+  classDef edge fill:#dbeafe,stroke:#2563eb,color:#1e293b,stroke-width:1.5px;
+  classDef control fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px;
+  classDef data fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1.5px;
+  classDef storage fill:#ede9fe,stroke:#7c3aed,color:#4c1d95,stroke-width:1.5px;
+  classDef external fill:#ffe4e6,stroke:#e11d48,color:#881337,stroke-width:1.5px;
+
+  Browser[Browser]
+  Vercel["Vercel frontend<br/>finance-research-agent.vercel.app"]
+  API["Cloud Run service<br/>finance-research-api"]
+  Scheduler["Cloud Scheduler<br/>finance-research-dispatch"]
+  Job["Cloud Run job<br/>finance-research-worker"]
+
+  SQL[(Cloud SQL Postgres<br/>finance-research-pg)]
+  GCS[(GCS memo bucket<br/>finance-research-agent-artifacts)]
+  Sheets[(Google Sheets)]
+  Providers["External providers<br/>Gemini, Finnhub, FRED, Tavily, SEC"]
+
+  Browser --> Vercel
+  Vercel -->|HTTPS + CORS| API
+  Scheduler -->|dispatch-next| API
+  API -->|launch job| Job
+  API --> SQL
+  API -->|stream memo.pdf| GCS
+  Job --> SQL
+  Job --> GCS
+  Job --> Sheets
+  Job --> Providers
+
+  class Browser external;
+  class Vercel,API,Scheduler,Job control;
+  class SQL,GCS storage;
+  class Sheets,Providers data;

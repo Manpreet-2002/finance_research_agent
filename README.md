@@ -1,6 +1,6 @@
 # Finance Research Agent: Complete System Design (HLD + LLD)
 
-Last updated: 2026-02-28
+Last updated: 2026-03-04
 
 ## 1. Scope
 This repository implements a multi-turn US stocks finance research agent that produces two client-facing deliverables per run:
@@ -61,6 +61,14 @@ References:
 1. Manifest id: `m04`
 2. Source: `docs/system_design/mermaid/diagram_m04_memo_artifact_lineage.mmd`
 3. Rendered: `docs/system_design/assets/diagram_m04_memo_artifact_lineage.png`
+
+### 4.5 Deployed Production Topology (`m07`)
+![Deployed Production Topology](docs/system_design/assets/diagram_m07_deployed_production_topology.png)
+
+References:
+1. Manifest id: `m07`
+2. Source: `docs/system_design/mermaid/diagram_m07_deployed_production_topology.mmd`
+3. Rendered: `docs/system_design/assets/diagram_m07_deployed_production_topology.png`
 
 ## 5. Product Contract
 For every ticker run, the system must produce:
@@ -230,26 +238,32 @@ References:
 | `GET` | `/api/v1/executions/{id}` | Return a single execution plus computed artifact URLs. |
 | `GET` | `/api/v1/executions/{id}/memo.pdf` | Serve the memo artifact after path and ownership validation. |
 
-### 10.3 Execution Persistence Model (SQLite)
+### 10.3 Execution Persistence Model (Local SQLite, Deployed Postgres)
 Table: `executions`
 1. identity: `id`, `run_id`, `ticker`, `company_name`,
 2. lifecycle: `status`, `submitted_at_utc`, `started_at_utc`, `finished_at_utc`,
-3. artifact links: `spreadsheet_id`, `spreadsheet_url`, `memo_pdf_path`,
-4. diagnostics: `error_message`,
-5. audit: `created_at_utc`, `updated_at_utc`.
+3. artifact links: `spreadsheet_id`, `spreadsheet_url`, `memo_pdf_path`, `memo_pdf_external_url`,
+4. dispatch metadata: `job_execution_name`,
+5. diagnostics: `error_message`,
+6. audit: `created_at_utc`, `updated_at_utc`.
 
 Indexes:
 1. status + submission timestamp for queue and history scans,
 2. ticker + submission timestamp for ticker-scoped history.
 
+Runtime model:
+1. local development can still use a file-backed SQLite store,
+2. deployed Cloud Run uses Postgres for shared execution state between the API service and Cloud Run jobs,
+3. memo artifacts are stored in GCS in production and served back through the API.
+
 ### 10.4 Worker Semantics
-1. API startup initializes the execution store and starts the queue dispatcher.
-2. The dispatcher thread claims the oldest queued execution using `BEGIN IMMEDIATE` semantics.
-3. Claimed executions are dispatched into a bounded `ThreadPoolExecutor`.
-4. Each long-running valuation/memo run executes on its own `execution-runner-*` thread.
-5. The dispatcher remains free to continue polling and servicing intake while runs are in flight.
+1. API startup initializes the execution store and memo artifact store.
+2. Local development mode can still run an in-process dispatcher thread for fast iteration.
+3. Deployed mode uses `POST /api/v1/executions` to enqueue work and then dispatch at most one queued row into a Cloud Run Job launch.
+4. Cloud Scheduler calls the internal dispatch endpoint every minute to continue draining the queue when the API process is idle.
+5. Each Cloud Run job executes exactly one long-running valuation/memo run and writes terminal state back into Postgres.
 6. Terminal state writes mark `COMPLETED` or `FAILED` atomically after valuation + memo resolution.
-7. Shutdown stops the dispatcher and tears down the worker pool.
+7. Memo PDFs are fetched from GCS by the API service and streamed back through `/api/v1/executions/{id}/memo.pdf`.
 
 This separation is critical: the intake API must continue serving frontend polling and new submissions during long agent executions.
 
@@ -300,6 +314,7 @@ The frontend is intentionally client-facing and premium:
 4. memo manifest notes and error records.
 
 ## 13. Operational Runbook
+### 13.1 Local Development
 Backend API:
 ```bash
 cd /path/to/finance_research_agent
@@ -318,6 +333,28 @@ Smoke test:
 cd /path/to/finance_research_agent
 PYTHONPATH=. uv run scripts/smoke_test_langgraph_runner.py --ticker ORCL --env-file .env
 ```
+
+### 13.2 Deployed Production Surfaces (Current)
+Current public entrypoints:
+1. Frontend (Vercel): `https://finance-research-agent.vercel.app`
+2. Backend API (Cloud Run): `https://finance-research-api-gfnc7q4q7a-uc.a.run.app`
+3. Backend API canonical URL (Cloud Run): `https://finance-research-api-820190948453.us-central1.run.app`
+
+Current backend deployment topology:
+1. frontend is deployed on Vercel from `frontend/`,
+2. public HTTP API is deployed on Cloud Run service `finance-research-api`,
+3. long-running execution workers run as Cloud Run job `finance-research-worker`,
+4. execution state is shared through Cloud SQL Postgres `finance-research-pg`,
+5. memo artifacts are stored in GCS bucket `gs://finance-research-agent-artifacts`,
+6. queue draining is driven by Cloud Scheduler job `finance-research-dispatch`,
+7. CORS is configured on the API for the production Vercel origin plus localhost development origins.
+
+Current release note:
+1. the API service is on the latest image used for the HTTPS memo-link fix,
+2. the worker job remains on the prior image because the latest API-only rollout changed response URL generation, not worker execution logic.
+
+Detailed deployment history, exact commands, and current runtime state are recorded in:
+1. `docs/runbooks/backend-cloud-run-deployment-memory-2026-03-04.md`
 
 ## 14. Source Layout
 - `backend/`: FastAPI API, execution queue, orchestration, memo generation, tool adapters.

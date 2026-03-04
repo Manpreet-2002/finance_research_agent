@@ -1,5 +1,5 @@
 {
-  "version": "2026-02-26",
+  "version": "2026-03-04",
   "owner": "finance_research_agent",
   "diagrams": [
     {
@@ -49,6 +49,14 @@
       "source": "docs/system_design/mermaid/diagram_m06_execution_state_machine.mmd",
       "rendered_png": "docs/system_design/assets/diagram_m06_execution_state_machine.png",
       "purpose": "Queue lifecycle state transitions and recovery semantics for execution rows."
+    },
+    {
+      "id": "m07",
+      "title": "Deployed Production Topology",
+      "type": "mermaid-flowchart",
+      "source": "docs/system_design/mermaid/diagram_m07_deployed_production_topology.mmd",
+      "rendered_png": "docs/system_design/assets/diagram_m07_deployed_production_topology.png",
+      "purpose": "Current production deployment across Vercel, Cloud Run, Cloud SQL, GCS, and Cloud Scheduler."
     }
   ],
   "retained_legacy_assets": [
