@@ -686,6 +686,29 @@ class _ImplausibleDataService(_FakeDataService):
         )
 
 
+class _OutOfBoundsBetaDataService(_FakeDataService):
+    def build_canonical_dataset(self, ticker: str) -> CanonicalValuationDataset:
+        dataset = super().build_canonical_dataset(ticker)
+        market = dataset.market
+        return CanonicalValuationDataset(
+            ticker=dataset.ticker,
+            fundamentals=dataset.fundamentals,
+            market=MarketSnapshot(
+                ticker=market.ticker,
+                price=market.price,
+                beta=-0.25,
+                market_cap=market.market_cap,
+                shares_outstanding=market.shares_outstanding,
+                captured_at_utc=market.captured_at_utc,
+            ),
+            rates=dataset.rates,
+            news=list(dataset.news),
+            citations=list(dataset.citations),
+            assumptions=dict(dataset.assumptions),
+            tsm=dataset.tsm,
+        )
+
+
 def test_llm_tool_registry_canonical_sheet_inputs_flags_implausible_values() -> None:
     registry = build_phase_v1_tool_registry(
         data_service=_ImplausibleDataService(),
@@ -700,6 +723,27 @@ def test_llm_tool_registry_canonical_sheet_inputs_flags_implausible_values() -> 
     assert quality["is_plausible"] is False
     assert quality["is_ready"] is False
     assert any("inp_px out of bounds" in issue for issue in quality["plausibility_issues"])
+    artifact_path = Path(result["result"]["artifact_path"])
+    if artifact_path.exists():
+        artifact_path.unlink()
+
+
+def test_llm_tool_registry_canonical_sheet_inputs_falls_back_invalid_beta() -> None:
+    registry = build_phase_v1_tool_registry(
+        data_service=_OutOfBoundsBetaDataService(),
+        research_service=_FakeResearchService(),
+        sheets_engine=None,
+    )
+
+    result = registry.call("fetch_canonical_sheet_inputs", {"ticker": "AAPL"})
+    named_ranges = result["result"]["named_ranges"]
+    quality = result["result"]["quality_report"]
+
+    assert named_ranges["inp_beta"] == pytest.approx(1.0)
+    assert quality["is_complete"] is True
+    assert quality["is_plausible"] is True
+    assert quality["is_ready"] is True
+    assert not any("inp_beta out of bounds" in issue for issue in quality["plausibility_issues"])
     artifact_path = Path(result["result"]["artifact_path"])
     if artifact_path.exists():
         artifact_path.unlink()

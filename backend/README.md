@@ -68,3 +68,20 @@ PYTHONPATH=. uv run uvicorn backend.app.api.main:app --host 0.0.0.0 --port 8000 
 - Execution lifecycle statuses: `QUEUED`, `RUNNING`, `COMPLETED`, `FAILED`
 - Execution persistence defaults to `artifacts/api/executions.db`
 - Timestamps are returned in UTC ISO 8601 format
+
+## Cloud Run-safe execution mode
+- Set `EXECUTION_DISPATCH_MODE=cloud_run_job` to keep long-running valuation work out of the web process.
+- Set `EXECUTION_WORKER_ENABLED=false` on the API service in that mode.
+- Set `EXECUTION_STORE_BACKEND=postgres` and `EXECUTION_DATABASE_URL=postgresql://...` so the API service and worker job share execution state.
+- Set `MEMO_ARTIFACT_STORE=gcs` and `GCS_MEMO_BUCKET=<bucket>` so completed memo PDFs are moved out of the worker filesystem.
+- For Cloud Run, prefer injecting `GOOGLE_OAUTH_CLIENT_SECRET_JSON` and `GOOGLE_OAUTH_TOKEN_JSON` from Secret Manager; the app stages them into `GOOGLE_OAUTH_RUNTIME_DIR` (default `/tmp/google`) so token refresh stays writable.
+- Configure `EXECUTION_INTERNAL_AUTH_TOKEN` for the private dispatcher endpoint: `POST /api/v1/internal/dispatch-next`.
+- Configure `CLOUD_RUN_JOB_PROJECT_ID`, `CLOUD_RUN_JOB_REGION`, and `CLOUD_RUN_JOB_NAME` so the API can launch the worker job.
+- The worker job should run: `PYTHONPATH=. uv run python -m backend.app.workers.run_execution --execution-id <execution_id>`
+
+## Container build
+- Build the backend image from repo root using the dedicated Dockerfile:
+  `gcloud builds submit --tag REGION-docker.pkg.dev/PROJECT_ID/finance-research-backend/finance-research-backend:TAG -f backend/Dockerfile .`
+- The same image is used for both:
+  - the Cloud Run API service (default `CMD`)
+  - the Cloud Run worker job (override the command to run `python -m backend.app.workers.run_execution`)

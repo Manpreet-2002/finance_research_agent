@@ -18,6 +18,9 @@ class Settings:
     google_auth_mode: str = "oauth"
     google_oauth_client_secret_file: str = "credentials.json"
     google_oauth_token_file: str = "token.json"
+    google_oauth_client_secret_json: str = ""
+    google_oauth_token_json: str = ""
+    google_oauth_runtime_dir: str = "/tmp/google"
     sec_api_user_agent: str = "finance-research-agent/0.1 (name@domain.com)"
     sec_contact_email: str = ""
     fundamentals_provider: str = "finnhub"
@@ -62,10 +65,22 @@ class Settings:
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     api_cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    execution_store_backend: str = "sqlite"
+    execution_database_url: str = ""
     execution_db_path: str = "artifacts/api/executions.db"
     execution_worker_poll_seconds: float = 1.0
     execution_worker_enabled: bool = True
     execution_worker_concurrency: int = 1
+    execution_dispatch_mode: str = "background"
+    execution_internal_auth_token: str = ""
+    cloud_run_job_project_id: str = ""
+    cloud_run_job_region: str = ""
+    cloud_run_job_name: str = ""
+    cloud_run_job_container_name: str = ""
+    cloud_run_job_execution_env_name: str = "EXECUTION_ID"
+    memo_artifact_store: str = "local"
+    gcs_memo_bucket: str = ""
+    gcs_memo_prefix: str = "memos"
 
 
 def _parse_bool(value: str, default: bool) -> bool:
@@ -92,6 +107,9 @@ def load_settings() -> Settings:
             "GOOGLE_OAUTH_CLIENT_SECRET_FILE", "credentials.json"
         ),
         google_oauth_token_file=os.getenv("GOOGLE_OAUTH_TOKEN_FILE", "token.json"),
+        google_oauth_client_secret_json=os.getenv("GOOGLE_OAUTH_CLIENT_SECRET_JSON", ""),
+        google_oauth_token_json=os.getenv("GOOGLE_OAUTH_TOKEN_JSON", ""),
+        google_oauth_runtime_dir=os.getenv("GOOGLE_OAUTH_RUNTIME_DIR", "/tmp/google"),
         sec_api_user_agent=os.getenv(
             "SEC_API_USER_AGENT", "finance-research-agent/0.1 (name@domain.com)"
         ),
@@ -149,6 +167,8 @@ def load_settings() -> Settings:
         api_cors_origins=os.getenv(
             "API_CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
         ),
+        execution_store_backend=os.getenv("EXECUTION_STORE_BACKEND", "sqlite"),
+        execution_database_url=os.getenv("EXECUTION_DATABASE_URL", ""),
         execution_db_path=os.getenv("EXECUTION_DB_PATH", "artifacts/api/executions.db"),
         execution_worker_poll_seconds=float(
             os.getenv("EXECUTION_WORKER_POLL_SECONDS", "1.0")
@@ -161,4 +181,17 @@ def load_settings() -> Settings:
             1,
             int(os.getenv("EXECUTION_WORKER_CONCURRENCY", "1")),
         ),
+        execution_dispatch_mode=os.getenv("EXECUTION_DISPATCH_MODE", "background"),
+        execution_internal_auth_token=os.getenv("EXECUTION_INTERNAL_AUTH_TOKEN", ""),
+        cloud_run_job_project_id=os.getenv("CLOUD_RUN_JOB_PROJECT_ID", ""),
+        cloud_run_job_region=os.getenv("CLOUD_RUN_JOB_REGION", ""),
+        cloud_run_job_name=os.getenv("CLOUD_RUN_JOB_NAME", ""),
+        cloud_run_job_container_name=os.getenv("CLOUD_RUN_JOB_CONTAINER_NAME", ""),
+        cloud_run_job_execution_env_name=os.getenv(
+            "CLOUD_RUN_JOB_EXECUTION_ENV_NAME",
+            "EXECUTION_ID",
+        ),
+        memo_artifact_store=os.getenv("MEMO_ARTIFACT_STORE", "local"),
+        gcs_memo_bucket=os.getenv("GCS_MEMO_BUCKET", ""),
+        gcs_memo_prefix=os.getenv("GCS_MEMO_PREFIX", "memos"),
     )

@@ -14,6 +14,8 @@ from ...core.settings import Settings
 from ...memo.post_run_memo import MemoWrapperResult, PostRunMemoService
 from ...orchestrator.valuation_runner import ValuationRunner
 from ...schemas.valuation_run import ValuationRunRequest, ValuationRunResult
+from .artifact_store import MemoArtifactStore, build_memo_artifact_store
+from .launcher import ExecutionLauncher, build_execution_launcher
 from .models import ExecutionRecord
 from .store import ExecutionStore
 
@@ -37,11 +39,15 @@ class ExecutionService:
         store: ExecutionStore,
         config: ExecutionServiceConfig,
         repo_root: Path | None = None,
+        launcher: ExecutionLauncher | None = None,
+        memo_artifact_store: MemoArtifactStore | None = None,
     ) -> None:
         self.settings = settings
         self.store = store
         self.config = config
         self.repo_root = repo_root or Path(__file__).resolve().parents[4]
+        self.launcher = launcher or build_execution_launcher(settings)
+        self.memo_artifact_store = memo_artifact_store or build_memo_artifact_store(settings)
         self._logger = logging.getLogger("finance_research_agent.api.execution_service")
         self._stop_event = Event()
         self._worker_thread: Thread | None = None
@@ -49,6 +55,9 @@ class ExecutionService:
         self._inflight_futures: set[Future[None]] = set()
 
     def start(self) -> None:
+        if self._uses_external_dispatch():
+            self._logger.info("execution_worker_disabled_external_dispatch_mode")
+            return
         if not self.config.worker_enabled:
             self._logger.info("execution_worker_disabled")
             return
@@ -115,11 +124,76 @@ class ExecutionService:
         )
 
     def run_next_queued_once(self) -> ExecutionRecord | None:
+        if self._uses_external_dispatch():
+            return self.dispatch_next_queued_once()
         claimed = self.store.claim_next_queued()
         if claimed is None:
             return None
         self._process_claimed_execution(claimed)
         return self.store.get_execution(claimed.id)
+
+    def dispatch_next_queued_once(self) -> ExecutionRecord | None:
+        if not self._uses_external_dispatch():
+            claimed = self.store.claim_next_queued()
+            if claimed is None:
+                return None
+            self._process_claimed_execution(claimed)
+            return self.store.get_execution(claimed.id)
+
+        claimed = self.store.claim_next_queued_if_none_running()
+        if claimed is None:
+            self._logger.info("execution_dispatch_skipped_no_eligible_execution")
+            return None
+
+        try:
+            launch_result = self.launcher.launch(claimed)
+        except Exception:
+            self.store.requeue_execution(execution_id=claimed.id)
+            self._logger.exception(
+                "execution_dispatch_failed execution_id=%s run_id=%s",
+                claimed.id,
+                claimed.run_id,
+            )
+            raise
+
+        if launch_result.job_execution_name:
+            return self.store.set_job_execution_name(
+                execution_id=claimed.id,
+                job_execution_name=launch_result.job_execution_name,
+            )
+        refreshed = self.store.get_execution(claimed.id)
+        return refreshed or claimed
+
+    def run_execution_by_id(
+        self,
+        execution_id: str,
+        *,
+        allow_queued_claim: bool = False,
+    ) -> ExecutionRecord:
+        execution = self.store.get_execution(execution_id)
+        if execution is None:
+            raise ValueError(f"Execution {execution_id} not found.")
+
+        if execution.status == "QUEUED":
+            if not allow_queued_claim:
+                raise ValueError(
+                    f"Execution {execution_id} is QUEUED and must be claimed before running."
+                )
+            claimed = self.store.claim_execution_by_id(execution_id)
+            if claimed is None:
+                raise RuntimeError(f"Execution {execution_id} could not be claimed.")
+            execution = claimed
+        elif execution.status in {"COMPLETED", "FAILED"}:
+            return execution
+
+        self._process_claimed_execution(execution)
+        updated = self.store.get_execution(execution_id)
+        if updated is None:
+            raise RuntimeError(f"Execution {execution_id} disappeared after processing.")
+        return updated
+
+    def uses_external_dispatch(self) -> bool:
+        return self._uses_external_dispatch()
 
     def _worker_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -200,12 +274,17 @@ class ExecutionService:
                 and memo_result.status == "COMPLETED"
                 and memo_result.pdf_path
             ):
+                artifact_result = self.memo_artifact_store.publish(
+                    run_id=request.run_id,
+                    memo_result=memo_result,
+                )
                 self.store.mark_completed(
                     execution_id=execution.id,
                     company_name=company_name,
                     spreadsheet_id=result.spreadsheet_id,
                     spreadsheet_url=spreadsheet_url,
-                    memo_pdf_path=str(memo_result.pdf_path),
+                    memo_pdf_path=artifact_result.memo_pdf_path,
+                    memo_pdf_external_url=artifact_result.memo_pdf_reference,
                 )
                 self._logger.info(
                     "execution_completed execution_id=%s run_id=%s spreadsheet_id=%s",
@@ -222,6 +301,7 @@ class ExecutionService:
                 spreadsheet_id=result.spreadsheet_id if result else None,
                 spreadsheet_url=spreadsheet_url,
                 memo_pdf_path=str(memo_result.pdf_path) if memo_result and memo_result.pdf_path else None,
+                memo_pdf_external_url=None,
                 error_message=error_message,
             )
             self._logger.error(
@@ -233,13 +313,18 @@ class ExecutionService:
         except Exception as exc:  # noqa: BLE001
             spreadsheet_id = result.spreadsheet_id if result else None
             spreadsheet_url = _build_google_sheet_url(spreadsheet_id)
-            memo_pdf_path = str(memo_result.pdf_path) if memo_result and memo_result.pdf_path else None
+            memo_pdf_path = (
+                str(memo_result.pdf_path)
+                if memo_result and memo_result.pdf_path and self.memo_artifact_store.uses_local_paths()
+                else None
+            )
             self.store.mark_failed(
                 execution_id=execution.id,
                 company_name=None,
                 spreadsheet_id=spreadsheet_id,
                 spreadsheet_url=spreadsheet_url,
                 memo_pdf_path=memo_pdf_path,
+                memo_pdf_external_url=None,
                 error_message=str(exc),
             )
             self._logger.exception(
@@ -331,6 +416,9 @@ class ExecutionService:
             if memo_result.notes:
                 parts.append("memo_notes=" + "; ".join(memo_result.notes))
         return " | ".join(parts) if parts else "Execution failed with unknown error."
+
+    def _uses_external_dispatch(self) -> bool:
+        return str(self.settings.execution_dispatch_mode).strip().lower() == "cloud_run_job"
 
 
 def _build_google_sheet_url(spreadsheet_id: str | None) -> str | None:

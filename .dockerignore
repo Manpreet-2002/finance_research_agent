@@ -1,0 +1,36 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.venv
+.uv-cache
+.pytest_cache
+__pycache__/
+*.py[cod]
+
+artifacts/
+docs/
+frontend/
+tests/
+
+node_modules/
+**/node_modules/
+.next/
+coverage/
+dist/
+
+credentials.json
+service_account_creds.json
+token.json
+*.pem
+*.key
+*.p12
+
+tmp_frontend_*.png
+image.png
+image copy.png
+image copy 2.png
+Resume-Manpreet-Wells.pdf
+Valuation_Template_TTM_TSM_RD_Lease_BankStyle_ExcelGraph_Logbook.xlsx.bak
+*_smoke_*_Valuation_Template_TTM_TSM_RD_Lease_BankStyle_ExcelGraph_Logbook.xlsx

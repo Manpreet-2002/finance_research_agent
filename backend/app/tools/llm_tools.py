@@ -66,6 +66,9 @@ _CANONICAL_QUALITY_NUMERIC_BOUNDS: dict[str, tuple[float, float]] = {
     "inp_erp": (0.0, 0.20),
     "inp_beta": (0.0, 5.0),
 }
+_CANONICAL_NUMERIC_FALLBACKS: dict[str, tuple[float, float, float]] = {
+    "inp_beta": (0.0, 5.0, 1.0),
+}
 _SOURCES_TABLE_SCHEMA_WIDTH = 11
 _SOURCES_REQUIRED_COLUMN_INDEXES: tuple[int, ...] = (0, 1, 2, 3, 4, 5, 10)
 _SOURCES_TABLE_HEADER_ROW: tuple[str, ...] = (
@@ -1207,7 +1210,7 @@ def _build_canonical_sheet_inputs(
     *, data_service: DataService, ticker: str
 ) -> dict[str, Any]:
     dataset = data_service.build_canonical_dataset(ticker)
-    named_ranges = dataset.to_sheets_named_ranges()
+    named_ranges = _stabilize_canonical_named_ranges(dataset.to_sheets_named_ranges())
     quality_report = _build_canonical_quality_report(named_ranges)
     artifact_path, artifact_sha256 = _persist_canonical_dataset_artifact(
         ticker=ticker,
@@ -1223,6 +1226,25 @@ def _build_canonical_sheet_inputs(
         "artifact_sha256": artifact_sha256,
         "quality_report": quality_report,
     }
+
+
+def _stabilize_canonical_named_ranges(named_ranges: dict[str, Any]) -> dict[str, Any]:
+    stabilized = dict(named_ranges)
+    for range_name, (lower, upper, fallback) in _CANONICAL_NUMERIC_FALLBACKS.items():
+        raw_value = stabilized.get(range_name)
+        numeric = _to_optional_numeric_scalar(raw_value)
+        if numeric is not None and lower <= numeric <= upper:
+            continue
+        reason = "missing_or_non_numeric" if numeric is None else "out_of_bounds"
+        LOGGER.warning(
+            "canonical_named_range_fallback_applied range=%s reason=%s before=%r after=%s",
+            range_name,
+            reason,
+            raw_value,
+            fallback,
+        )
+        stabilized[range_name] = fallback
+    return stabilized
 
 
 def _build_canonical_quality_report(named_ranges: dict[str, Any]) -> dict[str, Any]:

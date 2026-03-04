@@ -37,8 +37,15 @@ class LangChainGeminiClient(LlmClient):
 
     def get_chat_model(self, *, model_override: str | None = None) -> ChatGoogleGenerativeAI:
         self._ensure_supported_dependency_version()
-        if self._chat_model is None or model_override:
-            selected_model = _normalize_model_name(model_override or self.model)
+        selected_model = _normalize_model_name(model_override or self.model)
+        if model_override:
+            return ChatGoogleGenerativeAI(
+                model=selected_model,
+                api_key=self.api_key,
+                temperature=self.temperature,
+                include_thoughts=self.include_thoughts,
+            )
+        if self._chat_model is None:
             self._chat_model = ChatGoogleGenerativeAI(
                 model=selected_model,
                 api_key=self.api_key,

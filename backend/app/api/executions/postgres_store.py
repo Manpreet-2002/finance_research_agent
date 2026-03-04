@@ -1,25 +1,26 @@
-"""SQLite persistence for valuation executions."""
+"""PostgreSQL-backed execution persistence for multi-instance deployments."""
 
 from __future__ import annotations
 
-from pathlib import Path
-import sqlite3
 from typing import Any
 from uuid import uuid4
 
 from .models import ExecutionRecord, ExecutionStatus, VALID_EXECUTION_STATUSES, utc_now_iso
 
+_DISPATCH_ADVISORY_LOCK_KEY = 810_426_001
 
-class ExecutionStore:
-    """Persistence layer for queued/running/completed execution records."""
 
-    def __init__(self, db_path: str | Path) -> None:
-        self.db_path = Path(db_path)
+class PostgresExecutionStore:
+    """Persistence layer for execution records stored in PostgreSQL."""
+
+    def __init__(self, database_url: str) -> None:
+        self.database_url = str(database_url).strip()
+        if not self.database_url:
+            raise ValueError("execution_database_url is required for PostgreSQL execution store.")
 
     def initialize(self) -> None:
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
-            conn.execute(
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS executions (
                     id TEXT PRIMARY KEY,
@@ -41,26 +42,37 @@ class ExecutionStore:
                 )
                 """
             )
-            conn.execute(
+            cur.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_executions_status_submitted
                 ON executions(status, submitted_at_utc DESC)
                 """
             )
-            conn.execute(
+            cur.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_executions_ticker_submitted
                 ON executions(ticker, submitted_at_utc DESC)
                 """
             )
-            self._ensure_schema_columns(conn)
+            cur.execute(
+                """
+                ALTER TABLE executions
+                ADD COLUMN IF NOT EXISTS memo_pdf_external_url TEXT
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE executions
+                ADD COLUMN IF NOT EXISTS job_execution_name TEXT
+                """
+            )
 
     def create_execution(self, *, ticker: str) -> ExecutionRecord:
         now = utc_now_iso()
         execution_id = str(uuid4())
         run_id = self._build_run_id()
-        with self._connect() as conn:
-            conn.execute(
+        with self._connect() as conn, conn.cursor() as cur:
+            row = cur.execute(
                 """
                 INSERT INTO executions (
                     id, run_id, ticker, company_name, status, submitted_at_utc,
@@ -69,24 +81,22 @@ class ExecutionStore:
                     error_message, created_at_utc, updated_at_utc
                 )
                 VALUES (
-                    ?, ?, ?, NULL, 'QUEUED', ?, NULL, NULL, NULL, NULL,
-                    NULL, NULL, NULL, NULL, ?, ?
+                    %s, %s, %s, NULL, 'QUEUED', %s,
+                    NULL, NULL, NULL, NULL,
+                    NULL, NULL, NULL, NULL, %s, %s
                 )
+                RETURNING *
                 """,
                 (execution_id, run_id, ticker, now, now, now),
-            )
-            row = conn.execute(
-                "SELECT * FROM executions WHERE id = ?",
-                (execution_id,),
             ).fetchone()
         if row is None:
             raise RuntimeError(f"Failed to load inserted execution row {execution_id}.")
         return self._row_to_record(row)
 
     def get_execution(self, execution_id: str) -> ExecutionRecord | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM executions WHERE id = ?",
+        with self._connect() as conn, conn.cursor() as cur:
+            row = cur.execute(
+                "SELECT * FROM executions WHERE id = %s",
                 (execution_id,),
             ).fetchone()
         if row is None:
@@ -108,42 +118,42 @@ class ExecutionStore:
         params: list[Any] = []
 
         if ticker:
-            where.append("ticker = ?")
+            where.append("ticker = %s")
             params.append(ticker)
         if status:
-            where.append("status = ?")
+            where.append("status = %s")
             params.append(status)
         if from_utc:
-            where.append("submitted_at_utc >= ?")
+            where.append("submitted_at_utc >= %s")
             params.append(from_utc)
         if to_utc:
-            where.append("submitted_at_utc <= ?")
+            where.append("submitted_at_utc <= %s")
             params.append(to_utc)
 
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
-        with self._connect() as conn:
-            total_row = conn.execute(
+        with self._connect() as conn, conn.cursor() as cur:
+            total_row = cur.execute(
                 f"SELECT COUNT(*) AS count FROM executions {where_sql}",
                 tuple(params),
             ).fetchone()
-            rows = conn.execute(
+            rows = cur.execute(
                 f"""
                 SELECT * FROM executions
                 {where_sql}
                 ORDER BY submitted_at_utc DESC
-                LIMIT ? OFFSET ?
+                LIMIT %s OFFSET %s
                 """,
                 (*params, page_size, offset),
             ).fetchall()
 
-        total = int(total_row["count"] if total_row is not None else 0)
+        total = int((total_row or {}).get("count", 0))
         return [self._row_to_record(row) for row in rows], total
 
     def has_running_execution(self) -> bool:
-        with self._connect() as conn:
-            row = conn.execute(
+        with self._connect() as conn, conn.cursor() as cur:
+            row = cur.execute(
                 """
-                SELECT 1
+                SELECT 1 AS present
                 FROM executions
                 WHERE status = 'RUNNING'
                 LIMIT 1
@@ -151,148 +161,127 @@ class ExecutionStore:
             ).fetchone()
         return row is not None
 
+    def claim_next_queued(self) -> ExecutionRecord | None:
+        now = utc_now_iso()
+        with self._connect() as conn, conn.cursor() as cur:
+            row = cur.execute(
+                """
+                SELECT * FROM executions
+                WHERE status = 'QUEUED'
+                ORDER BY submitted_at_utc ASC
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+                """
+            ).fetchone()
+            if row is None:
+                return None
+            execution_id = str(row["id"])
+            updated = cur.execute(
+                """
+                UPDATE executions
+                SET status = 'RUNNING',
+                    started_at_utc = COALESCE(started_at_utc, %s),
+                    updated_at_utc = %s,
+                    error_message = NULL
+                WHERE id = %s
+                RETURNING *
+                """,
+                (now, now, execution_id),
+            ).fetchone()
+        if updated is None:
+            raise RuntimeError(f"Execution {execution_id} disappeared after claim.")
+        return self._row_to_record(updated)
+
     def claim_next_queued_if_none_running(self) -> ExecutionRecord | None:
         now = utc_now_iso()
-        conn = self._connect()
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            running = conn.execute(
+        with self._connect() as conn, conn.cursor() as cur:
+            lock_row = cur.execute(
+                "SELECT pg_try_advisory_xact_lock(%s) AS locked",
+                (_DISPATCH_ADVISORY_LOCK_KEY,),
+            ).fetchone()
+            if not lock_row or not bool(lock_row["locked"]):
+                return None
+
+            running = cur.execute(
                 """
-                SELECT 1
+                SELECT 1 AS present
                 FROM executions
                 WHERE status = 'RUNNING'
                 LIMIT 1
                 """
             ).fetchone()
             if running is not None:
-                conn.commit()
                 return None
 
-            row = conn.execute(
+            row = cur.execute(
                 """
                 SELECT * FROM executions
                 WHERE status = 'QUEUED'
                 ORDER BY submitted_at_utc ASC
                 LIMIT 1
+                FOR UPDATE SKIP LOCKED
                 """
             ).fetchone()
             if row is None:
-                conn.commit()
                 return None
 
             execution_id = str(row["id"])
-            conn.execute(
+            updated = cur.execute(
                 """
                 UPDATE executions
                 SET status = 'RUNNING',
-                    started_at_utc = COALESCE(started_at_utc, ?),
-                    updated_at_utc = ?,
+                    started_at_utc = COALESCE(started_at_utc, %s),
+                    updated_at_utc = %s,
                     error_message = NULL
-                WHERE id = ?
+                WHERE id = %s
+                RETURNING *
                 """,
                 (now, now, execution_id),
-            )
-            updated = conn.execute(
-                "SELECT * FROM executions WHERE id = ?",
-                (execution_id,),
             ).fetchone()
-            conn.commit()
-            if updated is None:
-                raise RuntimeError(f"Execution {execution_id} disappeared after claim.")
-            return self._row_to_record(updated)
-        finally:
-            conn.close()
-
-    def claim_next_queued(self) -> ExecutionRecord | None:
-        now = utc_now_iso()
-        conn = self._connect()
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                """
-                SELECT * FROM executions
-                WHERE status = 'QUEUED'
-                ORDER BY submitted_at_utc ASC
-                LIMIT 1
-                """
-            ).fetchone()
-            if row is None:
-                conn.commit()
-                return None
-
-            execution_id = str(row["id"])
-            conn.execute(
-                """
-                UPDATE executions
-                SET status = 'RUNNING',
-                    started_at_utc = COALESCE(started_at_utc, ?),
-                    updated_at_utc = ?
-                WHERE id = ?
-                """,
-                (now, now, execution_id),
-            )
-            updated = conn.execute(
-                "SELECT * FROM executions WHERE id = ?",
-                (execution_id,),
-            ).fetchone()
-            conn.commit()
-            if updated is None:
-                raise RuntimeError(f"Execution {execution_id} disappeared after claim.")
-            return self._row_to_record(updated)
-        finally:
-            conn.close()
+        if updated is None:
+            raise RuntimeError(f"Execution {execution_id} disappeared after claim.")
+        return self._row_to_record(updated)
 
     def claim_execution_by_id(self, execution_id: str) -> ExecutionRecord | None:
         now = utc_now_iso()
-        conn = self._connect()
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
+        with self._connect() as conn, conn.cursor() as cur:
+            row = cur.execute(
                 """
                 SELECT * FROM executions
-                WHERE id = ?
-                LIMIT 1
+                WHERE id = %s
+                FOR UPDATE
                 """,
                 (execution_id,),
             ).fetchone()
             if row is None:
-                conn.commit()
                 return None
 
             status = str(row["status"])
             if status == "RUNNING":
-                conn.commit()
                 return self._row_to_record(row)
             if status != "QUEUED":
-                conn.commit()
                 return None
 
-            conn.execute(
+            updated = cur.execute(
                 """
                 UPDATE executions
                 SET status = 'RUNNING',
-                    started_at_utc = ?,
-                    updated_at_utc = ?,
+                    started_at_utc = %s,
+                    updated_at_utc = %s,
                     error_message = NULL
-                WHERE id = ?
+                WHERE id = %s
+                RETURNING *
                 """,
                 (now, now, execution_id),
-            )
-            updated = conn.execute(
-                "SELECT * FROM executions WHERE id = ?",
-                (execution_id,),
             ).fetchone()
-            conn.commit()
-            if updated is None:
-                raise RuntimeError(f"Execution {execution_id} disappeared after claim.")
-            return self._row_to_record(updated)
-        finally:
-            conn.close()
+        if updated is None:
+            raise RuntimeError(f"Execution {execution_id} disappeared after claim.")
+        return self._row_to_record(updated)
 
     def requeue_execution(self, *, execution_id: str) -> ExecutionRecord:
         now = utc_now_iso()
-        with self._connect() as conn:
-            conn.execute(
+        with self._connect() as conn, conn.cursor() as cur:
+            row = cur.execute(
                 """
                 UPDATE executions
                 SET status = 'QUEUED',
@@ -300,14 +289,11 @@ class ExecutionStore:
                     finished_at_utc = NULL,
                     job_execution_name = NULL,
                     error_message = NULL,
-                    updated_at_utc = ?
-                WHERE id = ?
+                    updated_at_utc = %s
+                WHERE id = %s
+                RETURNING *
                 """,
                 (now, execution_id),
-            )
-            row = conn.execute(
-                "SELECT * FROM executions WHERE id = ?",
-                (execution_id,),
             ).fetchone()
         if row is None:
             raise RuntimeError(f"Execution {execution_id} not found when requeueing.")
@@ -320,19 +306,16 @@ class ExecutionStore:
         job_execution_name: str | None,
     ) -> ExecutionRecord:
         now = utc_now_iso()
-        with self._connect() as conn:
-            conn.execute(
+        with self._connect() as conn, conn.cursor() as cur:
+            row = cur.execute(
                 """
                 UPDATE executions
-                SET job_execution_name = ?,
-                    updated_at_utc = ?
-                WHERE id = ?
+                SET job_execution_name = %s,
+                    updated_at_utc = %s
+                WHERE id = %s
+                RETURNING *
                 """,
                 (job_execution_name, now, execution_id),
-            )
-            row = conn.execute(
-                "SELECT * FROM executions WHERE id = ?",
-                (execution_id,),
             ).fetchone()
         if row is None:
             raise RuntimeError(
@@ -351,20 +334,21 @@ class ExecutionStore:
         memo_pdf_external_url: str | None = None,
     ) -> ExecutionRecord:
         finished = utc_now_iso()
-        with self._connect() as conn:
-            conn.execute(
+        with self._connect() as conn, conn.cursor() as cur:
+            row = cur.execute(
                 """
                 UPDATE executions
                 SET status = 'COMPLETED',
-                    company_name = ?,
-                    finished_at_utc = ?,
-                    spreadsheet_id = ?,
-                    spreadsheet_url = ?,
-                    memo_pdf_path = ?,
-                    memo_pdf_external_url = COALESCE(?, memo_pdf_external_url),
+                    company_name = %s,
+                    finished_at_utc = %s,
+                    spreadsheet_id = %s,
+                    spreadsheet_url = %s,
+                    memo_pdf_path = %s,
+                    memo_pdf_external_url = COALESCE(%s, memo_pdf_external_url),
                     error_message = NULL,
-                    updated_at_utc = ?
-                WHERE id = ?
+                    updated_at_utc = %s
+                WHERE id = %s
+                RETURNING *
                 """,
                 (
                     company_name,
@@ -376,10 +360,6 @@ class ExecutionStore:
                     finished,
                     execution_id,
                 ),
-            )
-            row = conn.execute(
-                "SELECT * FROM executions WHERE id = ?",
-                (execution_id,),
             ).fetchone()
         if row is None:
             raise RuntimeError(f"Execution {execution_id} not found when marking complete.")
@@ -397,20 +377,21 @@ class ExecutionStore:
         memo_pdf_external_url: str | None = None,
     ) -> ExecutionRecord:
         finished = utc_now_iso()
-        with self._connect() as conn:
-            conn.execute(
+        with self._connect() as conn, conn.cursor() as cur:
+            row = cur.execute(
                 """
                 UPDATE executions
                 SET status = 'FAILED',
-                    company_name = COALESCE(?, company_name),
-                    finished_at_utc = ?,
-                    spreadsheet_id = COALESCE(?, spreadsheet_id),
-                    spreadsheet_url = COALESCE(?, spreadsheet_url),
-                    memo_pdf_path = COALESCE(?, memo_pdf_path),
-                    memo_pdf_external_url = COALESCE(?, memo_pdf_external_url),
-                    error_message = ?,
-                    updated_at_utc = ?
-                WHERE id = ?
+                    company_name = COALESCE(%s, company_name),
+                    finished_at_utc = %s,
+                    spreadsheet_id = COALESCE(%s, spreadsheet_id),
+                    spreadsheet_url = COALESCE(%s, spreadsheet_url),
+                    memo_pdf_path = COALESCE(%s, memo_pdf_path),
+                    memo_pdf_external_url = COALESCE(%s, memo_pdf_external_url),
+                    error_message = %s,
+                    updated_at_utc = %s
+                WHERE id = %s
+                RETURNING *
                 """,
                 (
                     company_name,
@@ -423,10 +404,6 @@ class ExecutionStore:
                     finished,
                     execution_id,
                 ),
-            )
-            row = conn.execute(
-                "SELECT * FROM executions WHERE id = ?",
-                (execution_id,),
             ).fetchone()
         if row is None:
             raise RuntimeError(f"Execution {execution_id} not found when marking failed.")
@@ -434,31 +411,20 @@ class ExecutionStore:
 
     def _build_run_id(self) -> str:
         now = utc_now_iso().replace("+00:00", "Z")
-        compact = (
-            now.replace("-", "")
-            .replace(":", "")
-            .replace(".", "")
-        )
+        compact = now.replace("-", "").replace(":", "").replace(".", "")
         return f"api_{compact}_{uuid4().hex[:8]}"
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA foreign_keys=ON;")
-        return conn
+    def _connect(self) -> Any:
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+        except ImportError as exc:  # pragma: no cover - exercised only when dependency missing
+            raise RuntimeError(
+                "PostgreSQL execution store requires psycopg. Run `uv sync` to install it."
+            ) from exc
+        return psycopg.connect(self.database_url, row_factory=dict_row)
 
-    def _ensure_schema_columns(self, conn: sqlite3.Connection) -> None:
-        existing = {
-            str(row["name"])
-            for row in conn.execute("PRAGMA table_info(executions)").fetchall()
-        }
-        if "memo_pdf_external_url" not in existing:
-            conn.execute("ALTER TABLE executions ADD COLUMN memo_pdf_external_url TEXT")
-        if "job_execution_name" not in existing:
-            conn.execute("ALTER TABLE executions ADD COLUMN job_execution_name TEXT")
-
-    def _row_to_record(self, row: sqlite3.Row) -> ExecutionRecord:
+    def _row_to_record(self, row: dict[str, Any]) -> ExecutionRecord:
         status = str(row["status"])
         if status not in VALID_EXECUTION_STATUSES:
             raise RuntimeError(f"Invalid execution status in DB: {status}")
@@ -466,17 +432,17 @@ class ExecutionStore:
             id=str(row["id"]),
             run_id=str(row["run_id"]),
             ticker=str(row["ticker"]),
-            company_name=_as_optional_text(row["company_name"]),
+            company_name=_as_optional_text(row.get("company_name")),
             status=status,  # type: ignore[arg-type]
             submitted_at_utc=str(row["submitted_at_utc"]),
-            started_at_utc=_as_optional_text(row["started_at_utc"]),
-            finished_at_utc=_as_optional_text(row["finished_at_utc"]),
-            spreadsheet_id=_as_optional_text(row["spreadsheet_id"]),
-            spreadsheet_url=_as_optional_text(row["spreadsheet_url"]),
-            memo_pdf_path=_as_optional_text(row["memo_pdf_path"]),
-            memo_pdf_external_url=_as_optional_text(row["memo_pdf_external_url"]),
-            job_execution_name=_as_optional_text(row["job_execution_name"]),
-            error_message=_as_optional_text(row["error_message"]),
+            started_at_utc=_as_optional_text(row.get("started_at_utc")),
+            finished_at_utc=_as_optional_text(row.get("finished_at_utc")),
+            spreadsheet_id=_as_optional_text(row.get("spreadsheet_id")),
+            spreadsheet_url=_as_optional_text(row.get("spreadsheet_url")),
+            memo_pdf_path=_as_optional_text(row.get("memo_pdf_path")),
+            memo_pdf_external_url=_as_optional_text(row.get("memo_pdf_external_url")),
+            job_execution_name=_as_optional_text(row.get("job_execution_name")),
+            error_message=_as_optional_text(row.get("error_message")),
             created_at_utc=str(row["created_at_utc"]),
             updated_at_utc=str(row["updated_at_utc"]),
         )

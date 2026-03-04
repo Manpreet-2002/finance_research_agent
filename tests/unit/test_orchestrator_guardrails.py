@@ -938,6 +938,248 @@ def test_run_phase_llm_turns_hard_fails_when_tool_loop_invoke_fails() -> None:
         )
 
 
+class _ToolLoopRetryChatModel:
+    def bind_tools(self, tools: list[object]) -> object:
+        del tools
+        return object()
+
+
+class _ToolLoopRetryLlmClient:
+    def get_chat_model(self):
+        return _ToolLoopRetryChatModel()
+
+
+def test_run_phase_llm_turns_retries_after_timeout_and_injects_retry_prompt() -> None:
+    agent = object.__new__(LangGraphFinanceAgent)
+    agent.llm_client = _ToolLoopRetryLlmClient()
+    agent.max_phase_turns = 1
+    agent.max_phase_wall_clock_seconds = 60.0
+    agent.max_llm_invoke_seconds = 600.0
+    agent.max_llm_timeout_attempts = 3
+    agent.llm_timeout_retry_backoff_seconds = 0.0
+    agent._tool_map = {}
+    agent._logger = logging.getLogger("test.orchestrator.guardrails.timeout.retry")
+
+    seen_messages: list[list[object]] = []
+    attempts = {"count": 0}
+
+    def _mock_invoke_with_timeout(
+        model: object,
+        messages: list[object],
+        *,
+        timeout_seconds: float,
+        context: str,
+    ) -> object:
+        del model, timeout_seconds, context
+        attempts["count"] += 1
+        seen_messages.append(list(messages))
+        if attempts["count"] < 3:
+            raise TimeoutError("model.invoke timeout after 600.0s (phase_tool_loop)")
+        return AIMessage(content="retry-success", tool_calls=[])
+
+    agent._invoke_with_timeout = _mock_invoke_with_timeout  # type: ignore[method-assign]
+
+    response, _tool_events = agent._run_phase_llm_turns(
+        system_prompt="system",
+        user_prompt="user",
+        tool_names=("sheets_read_outputs",),
+        expected_spreadsheet_id="sheet_123",
+        run_id="run_123",
+        phase_name="assumptions",
+    )
+
+    assert response == "retry-success"
+    assert attempts["count"] == 3
+    assert len(seen_messages[0]) == 2
+    assert len(seen_messages[1]) == 3
+    assert len(seen_messages[2]) == 3
+    assert "retry 2 of 3" in str(seen_messages[1][-1].content)
+    assert "600 seconds" in str(seen_messages[1][-1].content)
+    assert "retry 3 of 3" in str(seen_messages[2][-1].content)
+    assert "600 seconds" in str(seen_messages[2][-1].content)
+
+
+def test_run_phase_llm_turns_hard_fails_after_final_timeout_retry() -> None:
+    agent = object.__new__(LangGraphFinanceAgent)
+    agent.llm_client = _ToolLoopRetryLlmClient()
+    agent.max_phase_turns = 1
+    agent.max_phase_wall_clock_seconds = 60.0
+    agent.max_llm_invoke_seconds = 600.0
+    agent.max_llm_timeout_attempts = 3
+    agent.llm_timeout_retry_backoff_seconds = 0.0
+    agent._tool_map = {}
+    agent._logger = logging.getLogger("test.orchestrator.guardrails.timeout.fail")
+
+    seen_messages: list[list[object]] = []
+    attempts = {"count": 0}
+
+    def _mock_invoke_with_timeout(
+        model: object,
+        messages: list[object],
+        *,
+        timeout_seconds: float,
+        context: str,
+    ) -> object:
+        del model, timeout_seconds, context
+        attempts["count"] += 1
+        seen_messages.append(list(messages))
+        raise TimeoutError("model.invoke timeout after 600.0s (phase_tool_loop)")
+
+    agent._invoke_with_timeout = _mock_invoke_with_timeout  # type: ignore[method-assign]
+
+    with pytest.raises(LlmInvokeFailure) as exc_info:
+        agent._run_phase_llm_turns(
+            system_prompt="system",
+            user_prompt="user",
+            tool_names=("sheets_read_outputs",),
+            expected_spreadsheet_id="sheet_123",
+            run_id="run_123",
+            phase_name="assumptions",
+        )
+
+    assert attempts["count"] == 3
+    assert "tool_loop" in str(exc_info.value)
+    assert len(seen_messages[1]) == 3
+    assert len(seen_messages[2]) == 3
+    assert "retry 2 of 3" in str(seen_messages[1][-1].content)
+    assert "retry 3 of 3" in str(seen_messages[2][-1].content)
+
+
+def test_run_phase_llm_turns_retries_after_transient_503_and_injects_retry_prompt() -> None:
+    agent = object.__new__(LangGraphFinanceAgent)
+    agent.llm_client = _ToolLoopRetryLlmClient()
+    agent.max_phase_turns = 1
+    agent.max_phase_wall_clock_seconds = 60.0
+    agent.max_llm_invoke_seconds = 600.0
+    agent.max_llm_timeout_attempts = 3
+    agent.llm_timeout_retry_backoff_seconds = 0.0
+    agent._tool_map = {}
+    agent._logger = logging.getLogger("test.orchestrator.guardrails.503.retry")
+
+    seen_messages: list[list[object]] = []
+    attempts = {"count": 0}
+
+    def _mock_invoke_with_timeout(
+        model: object,
+        messages: list[object],
+        *,
+        timeout_seconds: float,
+        context: str,
+    ) -> object:
+        del model, timeout_seconds, context
+        attempts["count"] += 1
+        seen_messages.append(list(messages))
+        if attempts["count"] < 3:
+            raise RuntimeError(
+                "503 UNAVAILABLE. This model is currently experiencing high demand."
+            )
+        return AIMessage(content="retry-503-success", tool_calls=[])
+
+    agent._invoke_with_timeout = _mock_invoke_with_timeout  # type: ignore[method-assign]
+
+    response, _tool_events = agent._run_phase_llm_turns(
+        system_prompt="system",
+        user_prompt="user",
+        tool_names=("sheets_read_outputs",),
+        expected_spreadsheet_id="sheet_123",
+        run_id="run_123",
+        phase_name="assumptions",
+    )
+
+    assert response == "retry-503-success"
+    assert attempts["count"] == 3
+    assert len(seen_messages[1]) == 3
+    assert len(seen_messages[2]) == 3
+    assert "retry 2 of 3" in str(seen_messages[1][-1].content)
+    assert "503 UNAVAILABLE" in str(seen_messages[1][-1].content)
+    assert "retry 3 of 3" in str(seen_messages[2][-1].content)
+    assert "503 UNAVAILABLE" in str(seen_messages[2][-1].content)
+    assert "gemini-2.5-pro" in str(seen_messages[2][-1].content)
+
+
+def test_run_phase_llm_turns_does_not_retry_non_retryable_errors() -> None:
+    agent = object.__new__(LangGraphFinanceAgent)
+    agent.llm_client = _ToolLoopRetryLlmClient()
+    agent.max_phase_turns = 1
+    agent.max_phase_wall_clock_seconds = 60.0
+    agent.max_llm_invoke_seconds = 600.0
+    agent.max_llm_timeout_attempts = 3
+    agent.llm_timeout_retry_backoff_seconds = 0.0
+    agent._tool_map = {}
+    agent._logger = logging.getLogger("test.orchestrator.guardrails.non_retryable")
+
+    attempts = {"count": 0}
+
+    def _mock_invoke_with_timeout(
+        model: object,
+        messages: list[object],
+        *,
+        timeout_seconds: float,
+        context: str,
+    ) -> object:
+        del model, messages, timeout_seconds, context
+        attempts["count"] += 1
+        raise RuntimeError("provider unavailable")
+
+    agent._invoke_with_timeout = _mock_invoke_with_timeout  # type: ignore[method-assign]
+
+    with pytest.raises(LlmInvokeFailure) as exc_info:
+        agent._run_phase_llm_turns(
+            system_prompt="system",
+            user_prompt="user",
+            tool_names=("sheets_read_outputs",),
+            expected_spreadsheet_id="sheet_123",
+            run_id="run_123",
+            phase_name="assumptions",
+        )
+
+    assert attempts["count"] == 1
+    assert "provider unavailable" in str(exc_info.value)
+
+
+def test_invoke_with_timeout_retries_uses_fallback_model_on_final_attempt() -> None:
+    agent = object.__new__(LangGraphFinanceAgent)
+    agent.max_llm_timeout_attempts = 3
+    agent.llm_timeout_retry_backoff_seconds = 0.0
+    agent.llm_retry_fallback_model = "gemini-2.5-pro"
+    agent._logger = logging.getLogger("test.orchestrator.guardrails.fallback.model")
+
+    attempts = {"count": 0}
+    model_overrides: list[str | None] = []
+
+    def _model_factory(model_override: str | None) -> object:
+        model_overrides.append(model_override)
+        return object()
+
+    def _mock_invoke_with_timeout(
+        model: object,
+        messages: list[object],
+        *,
+        timeout_seconds: float,
+        context: str,
+    ) -> object:
+        del model, messages, timeout_seconds, context
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise TimeoutError("model.invoke timeout after 600.0s (phase_tool_loop)")
+        return AIMessage(content="fallback-model-success", tool_calls=[])
+
+    agent._invoke_with_timeout = _mock_invoke_with_timeout  # type: ignore[method-assign]
+
+    result = agent._invoke_with_timeout_retries(
+        object(),
+        [AIMessage(content="prior", tool_calls=[])],
+        timeout_seconds=600.0,
+        context="phase_tool_loop",
+        phase_name="assumptions",
+        run_id="run_123",
+        model_factory=_model_factory,
+    )
+
+    assert result.content == "fallback-model-success"
+    assert model_overrides == [None, None, "gemini-2.5-pro"]
+
+
 class _ValidationCompsRetryBoundModel:
     def __init__(self) -> None:
         self.invocations = 0

@@ -581,8 +581,7 @@ class GoogleSheetsEngine(SheetsEngine):
         if auth_mode != "oauth":
             raise RuntimeError("V1 requires GOOGLE_AUTH_MODE=oauth for Sheets access.")
 
-        oauth_client_file = Path(self.settings.google_oauth_client_secret_file)
-        token_file = Path(self.settings.google_oauth_token_file)
+        oauth_client_file, token_file = self._resolve_oauth_file_paths()
         self._logger.info(
             "load_credentials mode=%s token_file=%s client_file=%s",
             auth_mode,
@@ -621,6 +620,27 @@ class GoogleSheetsEngine(SheetsEngine):
 
         self._credentials = creds
         return self._credentials
+
+    def _resolve_oauth_file_paths(self) -> tuple[Path, Path]:
+        oauth_client_file = Path(self.settings.google_oauth_client_secret_file)
+        token_file = Path(self.settings.google_oauth_token_file)
+
+        client_secret_json = str(self.settings.google_oauth_client_secret_json or "").strip()
+        token_json = str(self.settings.google_oauth_token_json or "").strip()
+        if not client_secret_json and not token_json:
+            return oauth_client_file, token_file
+
+        runtime_dir = Path(str(self.settings.google_oauth_runtime_dir or "/tmp/google")).expanduser()
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+
+        if client_secret_json:
+            oauth_client_file = runtime_dir / "credentials.json"
+            oauth_client_file.write_text(client_secret_json, encoding="utf-8")
+        if token_json:
+            token_file = runtime_dir / "token.json"
+            token_file.write_text(token_json, encoding="utf-8")
+
+        return oauth_client_file, token_file
 
     def _resolve_template_file_id(self, drive: Any) -> str:
         if self._template_file_id:

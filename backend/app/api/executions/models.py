@@ -30,6 +30,8 @@ class ExecutionRecord:
     spreadsheet_id: str | None
     spreadsheet_url: str | None
     memo_pdf_path: str | None
+    memo_pdf_external_url: str | None
+    job_execution_name: str | None
     error_message: str | None
     created_at_utc: str
     updated_at_utc: str

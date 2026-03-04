@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+from backend.app.core.settings import load_settings
 from backend.app.sheets.google_engine import (
+    GoogleSheetsEngine,
     _RangeBounds,
     _coerce_matrix_for_named_range,
     _first_empty_row_offset,
@@ -136,3 +140,20 @@ def test_coerce_matrix_for_named_range_rectangular_requires_exact_shape() -> Non
         raise AssertionError("Expected ValueError for rectangular shape mismatch.")
     assert "sens_grid_values" in message
     assert "expected 2 rows" in message
+
+
+def test_google_oauth_json_secrets_are_staged_to_runtime_dir(tmp_path) -> None:
+    settings = replace(
+        load_settings(),
+        google_oauth_client_secret_json='{"installed":{"client_id":"abc"}}',
+        google_oauth_token_json='{"refresh_token":"token"}',
+        google_oauth_runtime_dir=str(tmp_path / "google"),
+    )
+    engine = GoogleSheetsEngine(settings=settings)
+
+    client_path, token_path = engine._resolve_oauth_file_paths()
+
+    assert client_path == tmp_path / "google" / "credentials.json"
+    assert token_path == tmp_path / "google" / "token.json"
+    assert client_path.read_text(encoding="utf-8") == '{"installed":{"client_id":"abc"}}'
+    assert token_path.read_text(encoding="utf-8") == '{"refresh_token":"token"}'

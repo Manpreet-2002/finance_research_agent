@@ -11,7 +11,7 @@ import logging
 from math import isfinite
 from pathlib import Path
 import re
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -62,6 +62,13 @@ class FinanceAgentState(TypedDict, total=False):
 
 class LlmInvokeFailure(RuntimeError):
     """Raised when an LLM invoke call fails and run must hard-stop."""
+
+
+def _is_retryable_llm_exception(exc: Exception) -> bool:
+    text = str(exc).upper()
+    if "503" not in text:
+        return False
+    return "UNAVAILABLE" in text or "HIGH DEMAND" in text
 
 
 _CANONICAL_REQUIRED_PREFILL_RANGES: tuple[str, ...] = (
@@ -239,6 +246,9 @@ class LangGraphFinanceAgent:
     max_phase_turns: int = 10
     max_phase_wall_clock_seconds: float = 120.0
     max_llm_invoke_seconds: float = 600.0
+    max_llm_timeout_attempts: int = 3
+    llm_timeout_retry_backoff_seconds: float = 5.0
+    llm_retry_fallback_model: str = "gemini-2.5-pro"
     max_validation_repair_passes: int = 5
     _tool_map: dict[str, StructuredTool] = field(default_factory=dict, init=False, repr=False)
     _graph: Any = field(default=None, init=False, repr=False)
@@ -1302,9 +1312,9 @@ class LangGraphFinanceAgent:
         allowed_named_table_writes: tuple[str, ...] = (),
     ) -> tuple[str, list[dict[str, Any]]]:
         if not tool_names:
-            chat_model = self.llm_client.get_chat_model()
+            chat_model = self._get_chat_model()
             try:
-                response = self._invoke_with_timeout(
+                response = self._invoke_with_timeout_retries(
                     chat_model,
                     [
                         SystemMessage(content=system_prompt),
@@ -1312,6 +1322,9 @@ class LangGraphFinanceAgent:
                     ],
                     timeout_seconds=self.max_llm_invoke_seconds,
                     context="phase_no_tools",
+                    phase_name=phase_name,
+                    run_id=run_id,
+                    model_factory=self._get_chat_model,
                 )
             except TimeoutError as exc:
                 self._logger.exception(
@@ -1341,8 +1354,10 @@ class LangGraphFinanceAgent:
         phase_started = perf_counter()
 
         tools = [self._tool_map[name] for name in tool_names if name in self._tool_map]
-        chat_model = self.llm_client.get_chat_model()
-        model = chat_model.bind_tools(tools)
+        def _build_bound_model(model_override: str | None = None) -> Any:
+            return self._get_chat_model(model_override=model_override).bind_tools(tools)
+
+        model = _build_bound_model()
 
         final_response = ""
         try:
@@ -1367,11 +1382,15 @@ class LangGraphFinanceAgent:
                         )
                     break
                 try:
-                    ai_message = self._invoke_with_timeout(
+                    ai_message, retry_message = self._invoke_with_timeout_retries(
                         model,
                         messages,
                         timeout_seconds=self.max_llm_invoke_seconds,
                         context="phase_tool_loop",
+                        phase_name=phase_name,
+                        run_id=run_id,
+                        return_retry_message=True,
+                        model_factory=_build_bound_model,
                     )
                 except TimeoutError as exc:
                     self._logger.exception(
@@ -1391,6 +1410,8 @@ class LangGraphFinanceAgent:
                     raise LlmInvokeFailure(
                         f"LLM invoke error in phase '{phase_name}' (tool_loop): {exc}"
                     ) from exc
+                if retry_message is not None:
+                    messages.append(retry_message)
                 # Keep the original AIMessage object in history so provider-specific
                 # tool metadata (including Gemini thought signatures) is preserved.
                 messages.append(ai_message)
@@ -1600,6 +1621,155 @@ class LangGraphFinanceAgent:
             ) from exc
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
+
+    def _get_chat_model(self, *, model_override: str | None = None) -> Any:
+        if model_override:
+            try:
+                return self.llm_client.get_chat_model(model_override=model_override)
+            except TypeError:
+                return self.llm_client.get_chat_model()
+        return self.llm_client.get_chat_model()
+
+    def _invoke_with_timeout_retries(
+        self,
+        model: Any,
+        messages: list[Any],
+        *,
+        timeout_seconds: float,
+        context: str,
+        phase_name: str,
+        run_id: str,
+        return_retry_message: bool = False,
+        model_factory: Callable[[str | None], Any] | None = None,
+    ) -> Any:
+        max_attempts = max(1, int(getattr(self, "max_llm_timeout_attempts", 3)))
+        base_backoff_seconds = max(
+            0.0,
+            float(getattr(self, "llm_timeout_retry_backoff_seconds", 5.0)),
+        )
+        last_timeout: TimeoutError | None = None
+        retry_reason: str | None = None
+
+        for attempt in range(1, max_attempts + 1):
+            retry_message: HumanMessage | None = None
+            attempt_messages = list(messages)
+            model_override = self._retry_model_override_for_attempt(
+                attempt=attempt,
+                max_attempts=max_attempts,
+            )
+            if attempt > 1:
+                retry_message = HumanMessage(
+                    content=self._build_llm_retry_prompt(
+                        phase_name=phase_name,
+                        context=context,
+                        attempt=attempt,
+                        max_attempts=max_attempts,
+                        timeout_seconds=timeout_seconds,
+                        retry_reason=retry_reason
+                        or "The previous model invocation timed out before producing a response.",
+                        model_override=model_override,
+                    )
+                )
+                attempt_messages.append(retry_message)
+            selected_model = model_factory(model_override) if model_factory else model
+
+            try:
+                result = self._invoke_with_timeout(
+                    selected_model,
+                    attempt_messages,
+                    timeout_seconds=timeout_seconds,
+                    context=context,
+                )
+                if return_retry_message:
+                    return result, retry_message
+                return result
+            except TimeoutError as exc:
+                last_timeout = exc
+                retry_reason = (
+                    "The previous model invocation timed out before producing a response."
+                )
+                if attempt >= max_attempts:
+                    break
+                next_attempt = attempt + 1
+                backoff_seconds = base_backoff_seconds * (2 ** max(0, next_attempt - 2))
+                self._logger.warning(
+                    "phase_llm_retry_scheduled run_id=%s phase=%s context=%s reason=timeout attempt=%s/%s backoff_seconds=%.1f error=%s",
+                    run_id,
+                    phase_name,
+                    context,
+                    next_attempt,
+                    max_attempts,
+                    backoff_seconds,
+                    exc,
+                )
+                if backoff_seconds > 0:
+                    sleep(backoff_seconds)
+            except Exception as exc:
+                if not _is_retryable_llm_exception(exc):
+                    raise
+                retry_reason = (
+                    "The previous model invocation failed with a transient 503 UNAVAILABLE "
+                    "response from the model provider."
+                )
+                if attempt >= max_attempts:
+                    raise
+                next_attempt = attempt + 1
+                backoff_seconds = base_backoff_seconds * (2 ** max(0, next_attempt - 2))
+                self._logger.warning(
+                    "phase_llm_retry_scheduled run_id=%s phase=%s context=%s reason=transient_503 attempt=%s/%s backoff_seconds=%.1f error=%s",
+                    run_id,
+                    phase_name,
+                    context,
+                    next_attempt,
+                    max_attempts,
+                    backoff_seconds,
+                    exc,
+                )
+                if backoff_seconds > 0:
+                    sleep(backoff_seconds)
+
+        if last_timeout is None:
+            raise RuntimeError("LLM retry helper exited without result or timeout.")
+        raise last_timeout
+
+    def _build_llm_retry_prompt(
+        self,
+        *,
+        phase_name: str,
+        context: str,
+        attempt: int,
+        max_attempts: int,
+        timeout_seconds: float,
+        retry_reason: str,
+        model_override: str | None,
+    ) -> str:
+        model_override_line = ""
+        if model_override:
+            model_override_line = (
+                f" This retry is using fallback model {model_override}."
+            )
+        return (
+            f"{retry_reason} "
+            f"This is retry {attempt} of {max_attempts} for phase '{phase_name}' "
+            f"({context}). The model invoke timeout is {timeout_seconds:.0f} seconds."
+            f"{model_override_line} "
+            "Respond decisively in this turn, keep tool usage minimal, and complete "
+            "the highest-value work first. If full completion is not possible, make "
+            "the most important writes/logs now and return a concise summary."
+        )
+
+    def _retry_model_override_for_attempt(
+        self,
+        *,
+        attempt: int,
+        max_attempts: int,
+    ) -> str | None:
+        fallback_model = str(getattr(self, "llm_retry_fallback_model", "") or "").strip()
+        if not fallback_model:
+            return None
+        if max_attempts >= 3 and attempt == max_attempts:
+            return fallback_model
+        return None
 
     def _run_phase_planner_executor(
         self,
@@ -1930,6 +2100,10 @@ class LangGraphFinanceAgent:
                 "comps_peer_count/comps_multiple_count are derived from comps_table_full.\n"
             )
 
+        phase_skills_text = _compact_text("\n\n".join(skills_block), limit=12_000)
+        shared_quality_text = _compact_text(shared_quality, limit=6_000)
+        phase_refs_text = _compact_text(phase_refs, limit=6_000)
+
         return (
             "You are the V1 US-stocks finance research agent. "
             "Execute the current deterministic phase with strict discipline.\n\n"
@@ -1947,11 +2121,11 @@ class LangGraphFinanceAgent:
             f"Available tools this phase: {', '.join(tool_names) if tool_names else 'none'}\n\n"
             "Return a concise phase summary in markdown, including decisions, tool actions, and handoff to next phase.\n\n"
             "## Phase Skills\n"
-            f"{_compact_text('\n\n'.join(skills_block), limit=12_000)}\n\n"
+            f"{phase_skills_text}\n\n"
             "## Shared Quality Bundle\n"
-            f"{_compact_text(shared_quality, limit=6_000)}\n\n"
+            f"{shared_quality_text}\n\n"
             "## Phase References\n"
-            f"{_compact_text(phase_refs, limit=6_000)}"
+            f"{phase_refs_text}"
         )
 
     def _phase_allowed_named_ranges(

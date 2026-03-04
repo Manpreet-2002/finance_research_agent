@@ -29,3 +29,8 @@ class ExecutionListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class DispatchExecutionResponse(BaseModel):
+    dispatched: bool
+    execution: ExecutionResponse | None = None
