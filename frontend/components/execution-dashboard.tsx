@@ -152,23 +152,23 @@ export default function ExecutionDashboard() {
         </form>
 
         <div className="metrics-grid">
-          <article>
+          <article className="metric-card">
             <p>Total</p>
             <h3>{records.length}</h3>
           </article>
-          <article>
+          <article className="metric-card">
             <p>Queued</p>
             <h3>{metrics.QUEUED}</h3>
           </article>
-          <article>
+          <article className="metric-card">
             <p>Running</p>
             <h3>{metrics.RUNNING}</h3>
           </article>
-          <article>
+          <article className="metric-card">
             <p>Completed</p>
             <h3>{metrics.COMPLETED}</h3>
           </article>
-          <article>
+          <article className="metric-card">
             <p>Failed</p>
             <h3>{metrics.FAILED}</h3>
           </article>
@@ -177,8 +177,11 @@ export default function ExecutionDashboard() {
 
       <section className="table-card">
         <header className="table-header">
-          <h2>Execution History</h2>
-          <p>
+          <div>
+            <h2>Execution History</h2>
+            <p className="table-subtitle">Latest 50 valuation + memo runs. Timestamp standard: UTC.</p>
+          </div>
+          <p className="sync-text">
             {refreshing ? "Refreshing..." : "Synced"}
             {lastSyncUtc ? ` at ${formatUtc(lastSyncUtc)}` : ""}
           </p>
@@ -188,64 +191,122 @@ export default function ExecutionDashboard() {
         {loading ? <p className="loading-text">Loading executions...</p> : null}
 
         {!loading ? (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Stock Ticker</th>
-                  <th>Name</th>
-                  <th>When Analyzed (UTC)</th>
-                  <th>Google Sheets</th>
-                  <th>Investment Memo PDF</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {records.length === 0 ? (
+          <>
+            <div className="table-wrap">
+              <table>
+                <thead>
                   <tr>
-                    <td colSpan={6} className="empty-row">
-                      No executions yet.
-                    </td>
+                    <th>Stock Ticker</th>
+                    <th>Name</th>
+                    <th>When Analyzed (UTC)</th>
+                    <th>Google Sheets</th>
+                    <th>Investment Memo PDF</th>
+                    <th>Status</th>
                   </tr>
-                ) : (
-                  records.map((row) => (
-                    <tr key={row.id}>
-                      <td className="mono">{row.ticker}</td>
-                      <td>{row.company_name || "-"}</td>
-                      <td className="mono">{formatUtc(row.analyzed_at_utc)}</td>
-                      <td>
-                        {row.google_sheets_url ? (
-                          <a href={row.google_sheets_url} target="_blank" rel="noreferrer">
-                            Open Sheet
-                          </a>
-                        ) : (
-                          "-"
-                        )}
-                      </td>
-                      <td>
-                        {row.memo_pdf_url ? (
-                          <a href={row.memo_pdf_url} target="_blank" rel="noreferrer">
-                            Open Memo
-                          </a>
-                        ) : (
-                          "-"
-                        )}
-                      </td>
-                      <td>
-                        <span className={statusBadgeClass(row.status)}>{row.status}</span>
-                        {row.status === "FAILED" && row.error_message ? (
-                          <p className="row-error" title={row.error_message}>
-                            {compactError(row.error_message)}
-                          </p>
-                        ) : null}
+                </thead>
+                <tbody>
+                  {records.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="empty-row">
+                        No executions yet.
                       </td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
+                  ) : (
+                    records.map((row) => (
+                      <tr key={row.id}>
+                        <td className="mono">{row.ticker}</td>
+                        <td>{row.company_name || "-"}</td>
+                        <td className="mono">{formatUtc(row.analyzed_at_utc)}</td>
+                        <td>
+                          {row.google_sheets_url ? (
+                            <a href={row.google_sheets_url} target="_blank" rel="noreferrer">
+                              Open Sheet
+                            </a>
+                          ) : (
+                            "-"
+                          )}
+                        </td>
+                        <td>
+                          {row.memo_pdf_url ? (
+                            <a href={row.memo_pdf_url} target="_blank" rel="noreferrer">
+                              Open Memo
+                            </a>
+                          ) : (
+                            "-"
+                          )}
+                        </td>
+                        <td>
+                          <span className={statusBadgeClass(row.status)}>{row.status}</span>
+                          {row.status === "FAILED" && row.error_message ? (
+                            <p className="row-error" title={row.error_message}>
+                              {compactError(row.error_message)}
+                            </p>
+                          ) : null}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="execution-mobile-list">
+              {records.length === 0 ? (
+                <p className="empty-mobile-list">No executions yet.</p>
+              ) : (
+                records.map((row) => (
+                  <article className="execution-card" key={`mobile-${row.id}`}>
+                    <header className="execution-card-header">
+                      <div>
+                        <p className="execution-card-label">Ticker</p>
+                        <h3 className="execution-card-ticker mono">{row.ticker}</h3>
+                        <p className="execution-card-name">{row.company_name || "-"}</p>
+                      </div>
+                      <span className={statusBadgeClass(row.status)}>{row.status}</span>
+                    </header>
+
+                    <dl className="execution-card-details">
+                      <div>
+                        <dt>When Analyzed (UTC)</dt>
+                        <dd className="mono">{formatUtc(row.analyzed_at_utc)}</dd>
+                      </div>
+                      <div>
+                        <dt>Google Sheets</dt>
+                        <dd>
+                          {row.google_sheets_url ? (
+                            <a href={row.google_sheets_url} target="_blank" rel="noreferrer">
+                              Open Sheet
+                            </a>
+                          ) : (
+                            "-"
+                          )}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Investment Memo PDF</dt>
+                        <dd>
+                          {row.memo_pdf_url ? (
+                            <a href={row.memo_pdf_url} target="_blank" rel="noreferrer">
+                              Open Memo
+                            </a>
+                          ) : (
+                            "-"
+                          )}
+                        </dd>
+                      </div>
+                    </dl>
+
+                    {row.status === "FAILED" && row.error_message ? (
+                      <p className="row-error" title={row.error_message}>
+                        {compactError(row.error_message)}
+                      </p>
+                    ) : null}
+                  </article>
+                ))
+              )}
+            </div>
+            </>
+          ) : null}
       </section>
     </main>
   );
