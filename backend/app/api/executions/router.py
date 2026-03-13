@@ -118,7 +118,7 @@ def download_execution_memo(
                 content=artifact.content,
                 media_type=artifact.media_type,
                 headers={
-                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Content-Disposition": f'inline; filename="{filename}"',
                 },
             )
         if is_http_reference(reference):
@@ -145,7 +145,9 @@ def download_execution_memo(
     return FileResponse(
         resolved,
         media_type="application/pdf",
-        filename=filename,
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+        },
     )
 
 

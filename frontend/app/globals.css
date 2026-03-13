@@ -331,6 +331,10 @@ tbody tr:hover {
   background: rgba(181, 136, 62, 0.06);
 }
 
+tbody tr.is-selected {
+  background: rgba(45, 87, 143, 0.1);
+}
+
 a {
   color: #2d578f;
   font-weight: 600;
@@ -344,6 +348,29 @@ a:hover {
 a:focus-visible {
   outline: 2px solid rgba(45, 87, 143, 0.45);
   outline-offset: 2px;
+}
+
+.link-button {
+  border: none;
+  padding: 0;
+  background: transparent;
+  color: #2d578f;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
+.link-button:focus-visible {
+  outline: 2px solid rgba(45, 87, 143, 0.45);
+  outline-offset: 2px;
+}
+
+.link-button-active {
+  color: #163b67;
 }
 
 .mono {
@@ -412,6 +439,132 @@ a:focus-visible {
 
 .execution-mobile-list {
   display: none;
+  margin-top: 0.72rem;
+}
+
+.memo-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.1rem;
+  background: rgba(4, 12, 23, 0.66);
+  backdrop-filter: blur(7px);
+  animation: fade-in 0.18s ease-out;
+}
+
+.memo-modal {
+  width: min(1220px, 100%);
+  height: min(92vh, 980px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 26px;
+  background:
+    linear-gradient(180deg, rgba(252, 250, 244, 0.98), rgba(255, 255, 255, 0.98)),
+    var(--panel-strong);
+  box-shadow: 0 42px 120px rgba(2, 8, 18, 0.42);
+  overflow: hidden;
+}
+
+.memo-modal-label {
+  margin: 0;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.memo-modal-title {
+  margin: 0.26rem 0 0;
+  color: #0d1b2d;
+  font-family: var(--font-display);
+  font-size: clamp(1.25rem, 1.85vw, 2rem);
+  line-height: 1.06;
+}
+
+.memo-modal-meta {
+  margin: 0.28rem 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.memo-modal-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.8rem;
+  align-items: flex-start;
+  padding: 1rem 1rem 0.85rem;
+}
+
+.memo-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.48rem;
+}
+
+.viewer-action-link,
+.memo-modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.25rem;
+  border-radius: 999px;
+  padding: 0.55rem 0.9rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-decoration: none;
+}
+
+.viewer-action-link {
+  border: 1px solid rgba(45, 87, 143, 0.16);
+  background: rgba(45, 87, 143, 0.08);
+  color: #204b7a;
+}
+
+.viewer-action-link:hover {
+  text-decoration: none;
+  background: rgba(45, 87, 143, 0.12);
+}
+
+.memo-modal-close {
+  border: none;
+  cursor: pointer;
+  background: rgba(18, 35, 58, 0.08);
+  color: var(--ink-soft);
+}
+
+.memo-modal-close:hover {
+  transform: translateY(-1px);
+}
+
+.memo-modal-close:focus-visible {
+  outline: 2px solid rgba(45, 87, 143, 0.45);
+  outline-offset: 2px;
+}
+
+.memo-modal-frame-wrap {
+  display: flex;
+  min-height: 0;
+  padding: 0 1rem 1rem;
+}
+
+.memo-modal-frame {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  border: 1px solid rgba(18, 35, 58, 0.1);
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.74);
 }
 
 .execution-card {
@@ -420,6 +573,11 @@ a:focus-visible {
   background: var(--panel-strong);
   padding: 0.82rem;
   box-shadow: 0 8px 22px rgba(9, 19, 31, 0.06);
+}
+
+.execution-card.is-selected {
+  border-color: rgba(45, 87, 143, 0.32);
+  box-shadow: 0 14px 28px rgba(45, 87, 143, 0.1);
 }
 
 .execution-card-header {
@@ -613,12 +771,39 @@ a:focus-visible {
   .execution-mobile-list {
     display: grid;
     gap: 0.66rem;
-    margin-top: 0.72rem;
   }
 
   .execution-card .status-pill {
     font-size: 0.65rem;
     padding: 0.18rem 0.48rem;
+  }
+
+  .memo-modal-overlay {
+    padding: 0.6rem;
+    align-items: stretch;
+  }
+
+  .memo-modal {
+    width: 100%;
+    height: 100%;
+    border-radius: 18px;
+  }
+
+  .memo-modal-header {
+    padding: 0.85rem 0.85rem 0.72rem;
+  }
+
+  .memo-modal-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .memo-modal-frame-wrap {
+    padding: 0 0.85rem 0.85rem;
+  }
+
+  .memo-modal-frame {
+    border-radius: 14px;
   }
 }
 
