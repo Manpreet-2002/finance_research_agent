@@ -9,6 +9,7 @@ from backend.app.tools.provider_factory import (
     ProviderConfigError,
     build_data_service,
     build_research_service,
+    build_symbol_search_service,
 )
 
 
@@ -63,3 +64,17 @@ def test_build_research_service_with_phase_v1_defaults() -> None:
     )
     assert service.peer_client.__class__.__name__ == "FinnhubPeerUniverseClient"
     assert service.contradiction_checker.__class__.__name__ == "RuleBasedContradictionChecker"
+
+
+def test_build_symbol_search_service_uses_finnhub_and_sec() -> None:
+    settings = Settings(
+        finnhub_api_key="test-finnhub",
+        sec_api_user_agent="finance-research-agent/0.1 (test@example.com)",
+        sec_contact_email="test@example.com",
+    )
+
+    service = build_symbol_search_service(settings)
+
+    assert service.primary_client.__class__.__name__ == "FinnhubSymbolSearchClient"
+    assert service.fallback_client is not None
+    assert service.fallback_client.__class__.__name__ == "SecTickerDirectorySearchClient"

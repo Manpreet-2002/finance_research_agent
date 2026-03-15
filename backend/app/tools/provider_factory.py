@@ -16,6 +16,9 @@ from .news.tavily import TavilyNewsClient
 from .peer.finnhub import FinnhubPeerUniverseClient
 from .rates.fred import FredRatesClient
 from .research_service import ResearchService
+from .symbol_search.finnhub import FinnhubSymbolSearchClient
+from .symbol_search.sec import SecTickerDirectorySearchClient
+from .symbol_search.service import SymbolSearchService
 from .transcripts.alpha_vantage import AlphaVantageTranscriptClient
 
 
@@ -182,5 +185,16 @@ def build_research_service(settings: Settings) -> ResearchService:
         peer_client=_build_peer_client(settings, selection.peer_provider),
         contradiction_checker=_build_contradiction_checker(
             selection.contradiction_checker_provider
+        ),
+    )
+
+
+def build_symbol_search_service(settings: Settings) -> SymbolSearchService:
+    """Build symbol lookup using Finnhub first and SEC as a durable fallback."""
+    return SymbolSearchService(
+        primary_client=FinnhubSymbolSearchClient(api_key=settings.finnhub_api_key),
+        fallback_client=SecTickerDirectorySearchClient(
+            user_agent=settings.sec_api_user_agent,
+            contact_email=settings.sec_contact_email,
         ),
     )

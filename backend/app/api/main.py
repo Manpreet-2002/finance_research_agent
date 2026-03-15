@@ -16,6 +16,9 @@ from .executions.artifact_store import MemoArtifactStore, build_memo_artifact_st
 from .executions.service import ExecutionService, ExecutionServiceConfig
 from .executions.store import ExecutionStore
 from .executions.store_factory import build_execution_store
+from .symbol_search.router import router as symbol_search_router
+from ..tools.provider_factory import build_symbol_search_service
+from ..tools.symbol_search.client import SymbolSearchServiceProtocol
 
 
 def create_app(
@@ -24,6 +27,7 @@ def create_app(
     execution_store: ExecutionStore | None = None,
     execution_service: ExecutionService | None = None,
     memo_artifact_store: MemoArtifactStore | None = None,
+    symbol_search_service: SymbolSearchServiceProtocol | None = None,
     start_worker: bool = True,
     repo_root: Path | None = None,
 ) -> FastAPI:
@@ -65,6 +69,9 @@ def create_app(
         "memo_artifact_store",
         None,
     ) or build_memo_artifact_store(resolved_settings)
+    resolved_symbol_search_service = symbol_search_service or build_symbol_search_service(
+        resolved_settings
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
@@ -85,6 +92,7 @@ def create_app(
     app.state.execution_store = store
     app.state.execution_service = service
     app.state.memo_artifact_store = resolved_memo_artifact_store
+    app.state.symbol_search_service = resolved_symbol_search_service
     app.state.repo_root = resolved_repo_root
 
     origins = _parse_cors_origins(resolved_settings.api_cors_origins)
@@ -102,6 +110,7 @@ def create_app(
         return {"status": "ok"}
 
     app.include_router(executions_router)
+    app.include_router(symbol_search_router)
     return app
 
 

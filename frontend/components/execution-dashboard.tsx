@@ -1,15 +1,29 @@
 "use client";
 
-import { FormEvent, MouseEvent, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  FormEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import {
   ExecutionRecord,
   ExecutionStatus,
+  SymbolSearchMatch,
   fetchExecutions,
+  fetchSymbolMatches,
   submitExecution,
 } from "../lib/api";
 
 const POLL_INTERVAL_MS = 10_000;
+const SYMBOL_SEARCH_DEBOUNCE_MS = 225;
+const TICKER_PATTERN = /^[A-Z][A-Z0-9.-]{0,9}$/;
 
 function formatUtc(timestamp: string | null): string {
   if (!timestamp) {
@@ -47,16 +61,57 @@ function memoLabel(row: Pick<ExecutionRecord, "ticker" | "company_name">): strin
   return row.company_name ? `${row.ticker} · ${row.company_name}` : row.ticker;
 }
 
+function normalizeTickerInput(value: string): string {
+  return value.trim().toUpperCase();
+}
+
+function resolveManualTicker(
+  rawValue: string,
+  matches: SymbolSearchMatch[]
+): string | null {
+  const trimmed = rawValue.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const normalized = normalizeTickerInput(trimmed);
+  if (!TICKER_PATTERN.test(normalized)) {
+    return null;
+  }
+
+  if (matches.some((match) => match.ticker === normalized)) {
+    return normalized;
+  }
+
+  const hasExplicitTickerShape = /[0-9.-]/.test(trimmed);
+  if (trimmed === trimmed.toUpperCase() && (normalized.length <= 4 || hasExplicitTickerShape)) {
+    return normalized;
+  }
+
+  return null;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
 export default function ExecutionDashboard() {
-  const [ticker, setTicker] = useState("");
+  const [searchText, setSearchText] = useState("");
   const [records, setRecords] = useState<ExecutionRecord[]>([]);
+  const [symbolMatches, setSymbolMatches] = useState<SymbolSearchMatch[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [searchingSymbols, setSearchingSymbols] = useState(false);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState(-1);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [lastSyncUtc, setLastSyncUtc] = useState<string>("");
   const [selectedMemoId, setSelectedMemoId] = useState<string | null>(null);
+  const searchShellRef = useRef<HTMLDivElement | null>(null);
+  const listboxId = useId();
 
   const loadRows = useCallback(async (showSpinner: boolean) => {
     if (showSpinner) {
@@ -84,6 +139,52 @@ export default function ExecutionDashboard() {
     }, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [loadRows]);
+
+  useEffect(() => {
+    const query = searchText.trim();
+    if (!query) {
+      setSymbolMatches([]);
+      setSearchingSymbols(false);
+      setSearchError(null);
+      setHighlightedIndex(-1);
+      return;
+    }
+
+    setSymbolMatches([]);
+    setHighlightedIndex(-1);
+    setSearchingSymbols(true);
+    setSearchError(null);
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        const payload = await fetchSymbolMatches(query, controller.signal);
+        setSymbolMatches(payload.items);
+        setHighlightedIndex((currentIndex) => {
+          if (payload.items.length === 0) {
+            return -1;
+          }
+          return currentIndex >= 0 && currentIndex < payload.items.length ? currentIndex : -1;
+        });
+      } catch (error) {
+        if (isAbortError(error)) {
+          return;
+        }
+        setSymbolMatches([]);
+        setHighlightedIndex(-1);
+        setSearchError(error instanceof Error ? error.message : "Failed to search companies.");
+      } finally {
+        if (!controller.signal.aborted) {
+          setSearchingSymbols(false);
+        }
+      }
+    }, SYMBOL_SEARCH_DEBOUNCE_MS);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [searchText]);
 
   useEffect(() => {
     if (!selectedMemoId) {
@@ -115,6 +216,23 @@ export default function ExecutionDashboard() {
     return records.find((row) => row.id === selectedMemoId) ?? null;
   }, [records, selectedMemoId]);
 
+  const manualTicker = useMemo(
+    () => resolveManualTicker(searchText, symbolMatches),
+    [searchText, symbolMatches]
+  );
+
+  const noSymbolMatches =
+    searchText.trim().length > 0 &&
+    !searchingSymbols &&
+    !searchError &&
+    symbolMatches.length === 0;
+  const showSearchDropdown =
+    isSearchOpen &&
+    searchText.trim().length > 0 &&
+    (searchingSymbols || Boolean(searchError) || symbolMatches.length > 0 || noSymbolMatches);
+  const activeOptionId =
+    highlightedIndex >= 0 ? `${listboxId}-option-${highlightedIndex}` : undefined;
+
   useEffect(() => {
     if (!selectedMemoRecord) {
       return;
@@ -133,28 +251,62 @@ export default function ExecutionDashboard() {
     };
   }, [selectedMemoRecord]);
 
+  const submitTicker = useCallback(async (rawTicker: string) => {
+    const normalized = normalizeTickerInput(rawTicker);
+    if (!TICKER_PATTERN.test(normalized)) {
+      setSubmitError("Select a matching company result or enter a valid ticker.");
+      return;
+    }
+
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      const created = await submitExecution(normalized);
+      setRecords((prev) => [created, ...prev]);
+      setSearchText("");
+      setSymbolMatches([]);
+      setHighlightedIndex(-1);
+      setIsSearchOpen(false);
+      setSearchError(null);
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : "Failed to submit execution.");
+    } finally {
+      setSubmitting(false);
+    }
+  }, []);
+
+  const handleSelectedMatchSubmit = useCallback(
+    async (match: SymbolSearchMatch) => {
+      await submitTicker(match.ticker);
+    },
+    [submitTicker]
+  );
+
   const onSubmit = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
-      const normalized = ticker.trim().toUpperCase();
-      if (!normalized) {
-        setSubmitError("Ticker is required.");
+
+      if (highlightedIndex >= 0 && symbolMatches[highlightedIndex]) {
+        await handleSelectedMatchSubmit(symbolMatches[highlightedIndex]);
         return;
       }
 
-      setSubmitting(true);
-      setSubmitError(null);
-      try {
-        const created = await submitExecution(normalized);
-        setRecords((prev) => [created, ...prev]);
-        setTicker("");
-      } catch (error) {
-        setSubmitError(error instanceof Error ? error.message : "Failed to submit execution.");
-      } finally {
-        setSubmitting(false);
+      if (manualTicker) {
+        await submitTicker(manualTicker);
+        return;
       }
+
+      setSubmitError("Select a matching company result or enter a valid ticker.");
+      setIsSearchOpen(searchText.trim().length > 0);
     },
-    [ticker]
+    [
+      handleSelectedMatchSubmit,
+      highlightedIndex,
+      manualTicker,
+      searchText,
+      submitTicker,
+      symbolMatches,
+    ]
   );
 
   const openMemo = useCallback((recordId: string) => {
@@ -174,6 +326,101 @@ export default function ExecutionDashboard() {
     [closeMemoViewer]
   );
 
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchText(value);
+    setSubmitError(null);
+    setSearchError(null);
+    setHighlightedIndex(-1);
+    setIsSearchOpen(value.trim().length > 0);
+  }, []);
+
+  const handleInputBlur = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      if (searchShellRef.current?.contains(document.activeElement)) {
+        return;
+      }
+      setIsSearchOpen(false);
+      setHighlightedIndex(-1);
+    });
+  }, []);
+
+  const handleInputKeyDown = useCallback(
+    async (event: ReactKeyboardEvent<HTMLInputElement>) => {
+      if (event.key === "ArrowDown") {
+        if (symbolMatches.length === 0) {
+          return;
+        }
+        event.preventDefault();
+        setIsSearchOpen(true);
+        setHighlightedIndex((currentIndex) => {
+          if (currentIndex >= symbolMatches.length - 1) {
+            return 0;
+          }
+          return currentIndex + 1;
+        });
+        return;
+      }
+
+      if (event.key === "ArrowUp") {
+        if (symbolMatches.length === 0) {
+          return;
+        }
+        event.preventDefault();
+        setIsSearchOpen(true);
+        setHighlightedIndex((currentIndex) => {
+          if (currentIndex <= 0) {
+            return symbolMatches.length - 1;
+          }
+          return currentIndex - 1;
+        });
+        return;
+      }
+
+      if (event.key === "Escape") {
+        if (!showSearchDropdown) {
+          return;
+        }
+        event.preventDefault();
+        setIsSearchOpen(false);
+        setHighlightedIndex(-1);
+        return;
+      }
+
+      if (event.key !== "Enter") {
+        return;
+      }
+
+      if (highlightedIndex >= 0 && symbolMatches[highlightedIndex]) {
+        event.preventDefault();
+        await handleSelectedMatchSubmit(symbolMatches[highlightedIndex]);
+        return;
+      }
+
+      if (manualTicker) {
+        event.preventDefault();
+        await submitTicker(manualTicker);
+        return;
+      }
+
+      if (!searchText.trim()) {
+        return;
+      }
+
+      event.preventDefault();
+      setSubmitError("Select a matching company result or enter a valid ticker.");
+      setIsSearchOpen(true);
+    },
+    [
+      handleSelectedMatchSubmit,
+      highlightedIndex,
+      manualTicker,
+      searchText,
+      showSearchDropdown,
+      submitTicker,
+      symbolMatches,
+    ]
+  );
+
   return (
     <main className="dashboard-shell">
       <section className="hero-card">
@@ -183,25 +430,103 @@ export default function ExecutionDashboard() {
         </div>
         <h1 className="hero-title">Valence Terminal</h1>
         <p className="hero-subtitle">
-          Premium US equities research for the public market investor: submit a ticker, generate a formula-owned valuation
-          workbook, and track every execution with client-ready memo deliverables. All times are UTC.
+          Premium US equities research for the public market investor: search by ticker or company name, generate a
+          formula-owned valuation workbook, and track every execution with client-ready memo deliverables. All times are
+          UTC.
         </p>
 
         <form className="submit-form" onSubmit={onSubmit}>
           <label htmlFor="ticker-input" className="field-label">
-            Stock Ticker
+            Ticker or Company Name
           </label>
           <div className="field-row">
-            <input
-              id="ticker-input"
-              type="text"
-              value={ticker}
-              onChange={(event) => setTicker(event.target.value.toUpperCase())}
-              placeholder="AAPL"
-              maxLength={10}
-              autoComplete="off"
-            />
-            <button type="submit" disabled={submitting}>
+            <div className="ticker-search-shell" ref={searchShellRef}>
+              <input
+                id="ticker-input"
+                type="text"
+                className="ticker-search-input"
+                value={searchText}
+                onChange={(event) => handleSearchChange(event.target.value)}
+                onFocus={() => {
+                  if (searchText.trim()) {
+                    setIsSearchOpen(true);
+                  }
+                }}
+                onBlur={handleInputBlur}
+                onKeyDown={(event) => {
+                  void handleInputKeyDown(event);
+                }}
+                placeholder="AAPL or Apple"
+                maxLength={80}
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                role="combobox"
+                aria-expanded={showSearchDropdown}
+                aria-controls={showSearchDropdown ? listboxId : undefined}
+                aria-activedescendant={activeOptionId}
+                aria-autocomplete="list"
+                aria-invalid={Boolean(submitError)}
+              />
+
+              {showSearchDropdown ? (
+                <div className="ticker-search-dropdown">
+                  <ul id={listboxId} className="ticker-search-results" role="listbox">
+                    {searchingSymbols ? (
+                      <li className="ticker-search-state" aria-live="polite">
+                        Searching companies...
+                      </li>
+                    ) : null}
+
+                    {!searchingSymbols && searchError ? (
+                      <li className="ticker-search-state ticker-search-state-error" aria-live="polite">
+                        {searchError}
+                      </li>
+                    ) : null}
+
+                    {!searchingSymbols && !searchError && noSymbolMatches ? (
+                      <li className="ticker-search-state" aria-live="polite">
+                        No matching companies
+                      </li>
+                    ) : null}
+
+                    {!searchingSymbols && !searchError
+                      ? symbolMatches.map((match, index) => {
+                          const optionId = `${listboxId}-option-${index}`;
+                          const isActive = index === highlightedIndex;
+                          return (
+                            <li key={`${match.ticker}-${match.company_name}`} role="presentation">
+                              <button
+                                id={optionId}
+                                type="button"
+                                role="option"
+                                aria-selected={isActive}
+                                aria-label={match.label}
+                                tabIndex={-1}
+                                disabled={submitting}
+                                className={`ticker-search-option ${isActive ? "ticker-search-option-active" : ""}`}
+                                onMouseDown={(event) => event.preventDefault()}
+                                onMouseEnter={() => setHighlightedIndex(index)}
+                                onClick={() => {
+                                  void handleSelectedMatchSubmit(match);
+                                }}
+                                title={match.label}
+                              >
+                                <span className="ticker-search-option-ticker">{match.ticker}</span>
+                                <span className="ticker-search-option-separator"> - </span>
+                                <span className="ticker-search-option-name">{match.company_name}</span>
+                              </button>
+                            </li>
+                          );
+                        })
+                      : null}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+
+            <button type="submit" className="submit-action" disabled={submitting}>
               {submitting ? "Submitting..." : "Analyze"}
             </button>
           </div>
@@ -386,11 +711,7 @@ export default function ExecutionDashboard() {
       </section>
 
       {selectedMemoRecord && selectedMemoRecord.memo_pdf_url ? (
-        <div
-          className="memo-modal-overlay"
-          role="presentation"
-          onClick={closeModalOnBackdrop}
-        >
+        <div className="memo-modal-overlay" role="presentation" onClick={closeModalOnBackdrop}>
           <section
             className="memo-modal"
             role="dialog"
@@ -423,7 +744,12 @@ export default function ExecutionDashboard() {
                 >
                   Download
                 </a>
-                <button type="button" className="memo-modal-close" onClick={closeMemoViewer} aria-label="Close memo viewer">
+                <button
+                  type="button"
+                  className="memo-modal-close"
+                  onClick={closeMemoViewer}
+                  aria-label="Close memo viewer"
+                >
                   Close
                 </button>
               </div>

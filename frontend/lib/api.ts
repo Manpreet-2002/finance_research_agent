@@ -22,6 +22,18 @@ export type ExecutionListPayload = {
   page_size: number;
 };
 
+export type SymbolSearchMatch = {
+  ticker: string;
+  company_name: string;
+  label: string;
+};
+
+export type SymbolSearchPayload = {
+  query: string;
+  total: number;
+  items: SymbolSearchMatch[];
+};
+
 const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 
 type ListParams = {
@@ -47,6 +59,22 @@ export async function fetchExecutions(params: ListParams = {}): Promise<Executio
     cache: "no-store",
   });
   return parseJsonResponse<ExecutionListPayload>(response);
+}
+
+export async function fetchSymbolMatches(
+  query: string,
+  signal?: AbortSignal
+): Promise<SymbolSearchPayload> {
+  const params = new URLSearchParams({
+    q: query,
+    limit: "10",
+  });
+  const response = await fetch(`${API_BASE_URL}/api/v1/symbol-search?${params.toString()}`, {
+    method: "GET",
+    cache: "no-store",
+    signal,
+  });
+  return parseJsonResponse<SymbolSearchPayload>(response);
 }
 
 export async function submitExecution(ticker: string): Promise<ExecutionRecord> {
